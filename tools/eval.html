@@ -1,0 +1,130 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Matcher accuracy test</title></head>
+<body style="font:13px monospace;background:#111;color:#ddd"><pre id="out">running…</pre>
+<script type="module">
+// Plays every real pick-up sound through the live recognition pipeline under game-like conditions
+// (volume, background noise, voice chat, pitch, EQ) plus non-cargo sounds, for each matcher mode.
+// Run with the exe started: http://localhost:5173/tools/eval.html   (?modes=band,broad)
+import { GameAudioListener } from '../audioListener.js';
+import { GAME_DATA } from '../data.js';
+const out = document.getElementById('out');
+const SR = 48000;
+const modes = (new URLSearchParams(location.search).get('modes') || 'band,broad').split(',');
+
+try {
+  const L = new GameAudioListener();
+  await L.loadReferences();
+  const ctx = new OfflineAudioContext(1, SR, SR);
+  const clips = [];
+  for (const s of GAME_DATA.sounds) {
+    const b = await ctx.decodeAudioData(await (await fetch(`/api/refsound/${s.pickup}.ogg`)).arrayBuffer());
+    const d = b.getChannelData(0).slice(0); let pk = 0; for (const v of d) pk = Math.max(pk, Math.abs(v));
+    clips.push({ soundId: s.id, data: d, peak: pk });
+  }
+  let seed;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+
+  // speech-like chatter: glottal pulse train (100-220 Hz), formants, ~4 syllables/s
+  function voice(n, amp) {
+    const v = new Float32Array(n);
+    let ph = 0, f0 = 120 + rnd() * 100;
+    const formants = [[500, 0.97], [1500, 0.95], [2500, 0.93]].map(([f, r]) => ({ f, r, y1: 0, y2: 0 }));
+    for (let i = 0; i < n; i++) {
+      const t = i / SR;
+      if (i % 2400 === 0) f0 = Math.max(90, Math.min(240, f0 + (rnd() - 0.5) * 30));
+      ph += f0 / SR; let src = 0; if (ph >= 1) { ph -= 1; src = 1; }
+      src += (rnd() - 0.5) * 0.05;
+      let y = 0;
+      for (const F of formants) {
+        const w = 2 * Math.PI * F.f / SR, o = src + 2 * F.r * Math.cos(w) * F.y1 - F.r * F.r * F.y2;
+        F.y2 = F.y1; F.y1 = o; y += o;
+      }
+      const env = Math.max(0, Math.sin(2 * Math.PI * 4 * t + 1.3)) ** 0.7;
+      v[i] = y * env * amp * 0.02;
+    }
+    return v;
+  }
+
+  function render(clip, peak, { gain, pitch, lp, snr, pink, voiceDb }) {
+    const n = Math.floor(clip.length / pitch);
+    const lead = Math.round(SR * (0.6 + rnd() * 0.3));
+    const s = new Float32Array(lead + n + SR);
+    const nr = snr === null ? 0 : peak * gain * Math.pow(10, -snr / 20);
+    let p = 0, y = 0;
+    for (let i = 0; i < s.length; i++) { const w = (rnd() - 0.5) * 3.46; p = 0.97 * p + 0.03 * w; s[i] = (pink ? p * 4.1 : w) * nr; }
+    if (voiceDb !== undefined) { const v = voice(s.length, peak * gain * Math.pow(10, voiceDb / 20)); for (let i = 0; i < s.length; i++) s[i] += v[i]; }
+    for (let i = 0; i < n; i++) {
+      const x = i * pitch, k = Math.floor(x), f = x - k;
+      const v = (clip[k] || 0) * (1 - f) + (clip[k + 1] || 0) * f;
+      y = lp ? y + lp * (v - y) : v;
+      s[lead + i] += y * gain;
+    }
+    return s;
+  }
+  function run(signal, mode) {
+    const T = new GameAudioListener();
+    T.refs = L.refs; T.clips = L.clips; T.refsReady = true; T.mfMode = mode;
+    const got = [];
+    T.on('match', m => got.push(m));
+    for (let i = 0; i < signal.length; i += 960) T.process(signal.subarray(i, i + 960));
+    return got;
+  }
+
+  const conditions = {
+    'clean':                     { gain: 1, pitch: 1, lp: 0, snr: null },
+    'quiet (-14 dB)':            { gain: 0.2, pitch: 1, lp: 0, snr: null },
+    'noise 30 dB below':         { gain: 1, pitch: 1, lp: 0, snr: 30, pink: 1 },
+    'noise 20 dB below':         { gain: 0.5, pitch: 1, lp: 0, snr: 20, pink: 0 },
+    'noise 15 dB below':         { gain: 0.5, pitch: 1, lp: 0, snr: 15, pink: 1 },
+    'voice chat -6 dB':          { gain: 0.7, pitch: 1, lp: 0, snr: 40, pink: 1, voiceDb: -6 },
+    'voice chat 0 dB':           { gain: 0.7, pitch: 1, lp: 0, snr: 40, pink: 1, voiceDb: 0 },
+    'pitch +-2% + noise 30':     { gain: 0.7, pitch: 'pm2', lp: 0, snr: 30, pink: 1 },
+    'muffled EQ + noise 30':     { gain: 0.7, pitch: 1, lp: 0.5, snr: 30, pink: 1 }
+  };
+  const gens = {
+    gunshot: t => 0.8 * Math.exp(-t * 25) * (rnd() * 2 - 1),
+    footstep: t => 0.4 * Math.exp(-t * 40) * Math.sin(2 * Math.PI * 90 * t) + 0.05 * Math.exp(-t * 60) * (rnd() * 2 - 1),
+    click: t => (t < 0.004 ? 0.5 * (rnd() * 2 - 1) : 0),
+    beep: t => 0.3 * Math.sin(2 * Math.PI * 1000 * t) * (t < 0.15 ? 1 : 0),
+    chord: t => 0.2 * Math.exp(-t * 3) * (Math.sin(2 * Math.PI * 261 * t) + Math.sin(2 * Math.PI * 329 * t) + Math.sin(2 * Math.PI * 392 * t)),
+    ping: t => 0.4 * Math.exp(-t * 12) * Math.sin(2 * Math.PI * 2400 * t),
+    thud: t => 0.5 * Math.exp(-t * 18) * (Math.sin(2 * Math.PI * 140 * t) + 0.3 * (rnd() * 2 - 1)),
+    metalClank: t => 0.4 * Math.exp(-t * 20) * (Math.sin(2 * Math.PI * 700 * t) + Math.sin(2 * Math.PI * 1930 * t) + 0.4 * (rnd() * 2 - 1))
+  };
+
+  const lines = [];
+  for (const mode of modes) {
+    seed = 12345;
+    lines.push(`=== matcher: ${mode} ===`);
+    const wrongs = [];
+    let tr = 0, tw = 0, tn = 0;
+    for (const [name, c] of Object.entries(conditions)) {
+      let right = 0, wrong = 0, none = 0;
+      for (const clip of clips) {
+        const cc = { ...c, pitch: c.pitch === 'pm2' ? (rnd() < 0.5 ? 0.98 : 1.02) : c.pitch };
+        const m = run(render(clip.data, clip.peak, cc), mode)[0];
+        if (!m) none++;
+        else if (m.soundId === clip.soundId) right++;
+        else { wrong++; wrongs.push(`${name}: #${clip.soundId} -> #${m.soundId} (${m.method} ${m.score.toFixed(2)})`); }
+      }
+      tr += right; tw += wrong; tn += none;
+      lines.push(`${name.padEnd(24)} right ${String(right).padStart(2)}/${clips.length}  wrong ${String(wrong).padStart(2)}  ignored ${String(none).padStart(2)}`);
+    }
+    let fa = 0, ft = 0; const fl = [];
+    const mk = (fn) => { const s = new Float32Array(SR * 2); for (let i = 0; i < SR * 0.6; i++) s[SR * 0.7 + i | 0] = fn(i / SR); for (let i = 0; i < s.length; i++) s[i] += (rnd() - 0.5) * 0.002; return s; };
+    for (const [n, fn] of Object.entries(gens)) for (let k = 0; k < 4; k++) {
+      const g = run(mk(fn), mode); ft++;
+      if (g.length) { fa++; fl.push(`${n} -> #${g[0].soundId}`); }
+    }
+    // 30 s of pure voice chat: nothing should be reported
+    const vc = voice(SR * 30, 0.3); for (let i = 0; i < vc.length; i++) vc[i] += (rnd() - 0.5) * 0.002;
+    const vg = run(vc, mode);
+    lines.push(`TOTAL right ${tr}  wrong ${tw}  ignored ${tn}   |  non-cargo sounds reported ${fa}/${ft} ${fl.join(' ')}  |  30 s voice chat alone -> ${vg.length} false reports ${vg.map(m => '#' + m.soundId).join(' ')}`);
+    lines.push('wrong: ' + (wrongs.slice(0, 12).join('; ') || 'none'), '');
+  }
+  out.textContent = lines.join('\n');
+} catch (e) {
+  out.textContent = 'ERROR ' + e.stack;
+}
+document.title = 'done';
+</script></body></html>

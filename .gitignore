@@ -1,0 +1,15 @@
+# Build output - publish the exe as a GitHub Release asset instead
+*.exe
+*.pdb
+
+# Local / legacy folders not meant for the public repo
+old/
+scratch/
+ABI-Field-Merchant/
+
+# Windows / editor clutter
+Thumbs.db
+desktop.ini
+.vs/
+.vscode/
+*.log

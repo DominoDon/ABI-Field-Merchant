@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Screen reading test</title></head>
+<body style="font:13px monospace;background:#111;color:#ddd"><pre id="out">running…</pre><canvas id="cv"></canvas>
+<script type="module">
+// Dev test (exe with --dev): runs the merchant screen reader on saved images in tools/_test/ or the snapshots folder.
+import { parseTooltip, parseFeed, crateSizeAt, matchType } from '../screen.js';
+const out = document.getElementById('out');
+const lines = [];
+const dir = new URLSearchParams(location.search).get('dir') || 'tools/_test/'; // relative to the exe's folder, or pass ?dir=<absolute path>/
+async function ocrFile(name, scale = 1) {
+  const r = await fetch(`/api/ocr?scale=${scale}&file=${encodeURIComponent(dir + name)}`);
+  return r.ok ? r.json() : { lines: [] };
+}
+async function gray(name) {
+  const bmp = await createImageBitmap(await (await fetch(`_test/${name}`)).blob());
+  const c = new OffscreenCanvas(bmp.width, bmp.height), x = c.getContext('2d'); x.drawImage(bmp, 0, 0);
+  const d = x.getImageData(0, 0, bmp.width, bmp.height).data, g = new Uint8Array(bmp.width * bmp.height);
+  for (let i = 0; i < g.length; i++) g[i] = (d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8;
+  return { g, w: bmp.width, h: bmp.height, bmp };
+}
+try {
+  // 1) tooltip
+  const tips = await ocrFile('zoom-tips.png');
+  lines.push('tooltip parse (zoom-tips): ' + JSON.stringify(parseTooltip(tips.lines)));
+  lines.push('label matches: ' + tips.lines.map(l => `${l.text} -> ${matchType(l.text)?.name || '-'}`).join(' | '));
+  // 2) purchase line (simulated full line, since the crop cuts it off)
+  lines.push('feed parse (sample): ' + JSON.stringify(parseFeed([{ text: 'Nick spent 250,000 Koen on a mystery cargo and obtained [Gold Lion Statue]' }])));
+  const pur = await ocrFile('zoom-purchase.png');
+  lines.push('feed parse (crop): ' + JSON.stringify(parseFeed(pur.lines)) + '  ocr: ' + pur.lines.map(l => l.text).join(' | '));
+  // 3) crate sizes at chosen points in zoom-tips (3x enlarged crop; cells ~170 px)
+  const G = await gray('zoom-tips.png');
+  const pts = { 'Household Items (top-left)': [150, 250], 'Household Items (top-right)': [620, 250], 'Uncommon Mystery Cargo (big)': [200, 450], 'black slot': [400, 270] };
+  for (const [name, [x, y]] of Object.entries(pts)) {
+    const s = crateSizeAt(G.g, G.w, G.h, x, y);
+    lines.push(`size at ${name} (${x},${y}): ` + (s ? `${s.w}x${s.h} cell≈${s.P}px box ${JSON.stringify(s.box)}` : 'not found'));
+  }
+  const G2 = await gray('zoom-purchase.png');
+  const pts2 = { 'Mystery Cargo 1x1 (row1 col2)': [170, 320], 'Uncommon Mystery Cargo (row2)': [370, 450], 'Mystery Cargo tall (col2 rows2-3)': [170, 560], 'Military Items': [370, 590] };
+  for (const [name, [x, y]] of Object.entries(pts2)) {
+    const s = crateSizeAt(G2.g, G2.w, G2.h, x, y);
+    lines.push(`size at ${name} (${x},${y}): ` + (s ? `${s.w}x${s.h} cell≈${s.P}px box ${JSON.stringify(s.box)}` : 'not found'));
+  }
+} catch (e) { lines.push('ERROR ' + e.stack); }
+out.textContent = lines.join('\n');
+document.title = 'done';
+</script></body></html>
