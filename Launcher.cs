@@ -852,6 +852,28 @@ namespace ABIFieldMerchant
             ns.Write(body, 0, body.Length);
         }
 
+        static readonly string[] TrustedHosts = { "127.0.0.1:" + Port, "localhost:" + Port };
+
+        static bool IsTrustedRequest(string head)
+        {
+            string host = null, origin = null, fetchSite = null;
+            foreach (var raw in head.Split(new[] { "\r\n" }, StringSplitOptions.None))
+            {
+                int colon = raw.IndexOf(':');
+                if (colon <= 0) continue;
+                string name = raw.Substring(0, colon).Trim().ToLowerInvariant(), value = raw.Substring(colon + 1).Trim();
+                if (name == "host") host = value.ToLowerInvariant();
+                else if (name == "origin") origin = value.ToLowerInvariant();
+                else if (name == "sec-fetch-site") fetchSite = value.ToLowerInvariant();
+            }
+            // DNS rebinding: a foreign site's name resolved to 127.0.0.1 still sends its own Host
+            if (host != null && Array.IndexOf(TrustedHosts, host) < 0) return false;
+            // A page from another origin (fetch, form, img/script/audio tag, ...)
+            if (origin != null && Array.IndexOf(TrustedHosts, origin.Replace("http://", "")) < 0) return false;
+            if (fetchSite != null && fetchSite != "same-origin" && fetchSite != "none") return false;
+            return true;
+        }
+
         void Handle(TcpClient c)
         {
             using (c)
@@ -878,6 +900,15 @@ namespace ABIFieldMerchant
                     int qi = target.IndexOf('?');
                     if (qi >= 0) { path = target.Substring(0, qi); query = target.Substring(qi + 1); }
                     path = Uri.UnescapeDataString(path);
+
+                    // Only the app's own pages may use this server. Blocks other websites open in the browser
+                    // (cross-site requests, and DNS rebinding via a foreign Host name). Non-browser local tools
+                    // (build script, second instance) send no Origin/Sec-Fetch-Site and a loopback Host, so they pass.
+                    if (!IsTrustedRequest(sb.ToString()))
+                    {
+                        WriteText(ns, 403, "Forbidden", "text/plain", Encoding.ASCII.GetBytes("forbidden"));
+                        return;
+                    }
 
                     if (path == "/api/ping")
                     {
