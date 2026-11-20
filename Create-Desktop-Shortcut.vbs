@@ -1,12 +1,14 @@
-' Creates a Desktop shortcut to Launch-ABI-Companion.exe in the folder this script is in.
+' Creates a Desktop shortcut to ABI-Field-Merchant.exe in the folder this script is in.
+' (Falls back to Launch-ABI-Companion.exe, the name used by older downloads.)
 Set WshShell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 strAppDir = fso.GetParentFolderName(WScript.ScriptFullName)
-strExe = strAppDir & "\Launch-ABI-Companion.exe"
+strExe = strAppDir & "\ABI-Field-Merchant.exe"
+If Not fso.FileExists(strExe) Then strExe = strAppDir & "\Launch-ABI-Companion.exe"
 
 If Not fso.FileExists(strExe) Then
-  WScript.Echo "Launch-ABI-Companion.exe was not found next to this script." & vbCrLf & _
-               "Extract the whole zip into a folder first, then run this again."
+  WScript.Echo "ABI-Field-Merchant.exe was not found next to this script." & vbCrLf & _
+               "Put this script in the same folder as ABI-Field-Merchant.exe, then run it again."
   WScript.Quit 1
 End If
 
