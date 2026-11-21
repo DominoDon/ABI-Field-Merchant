@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Crate size test</title>
+<style>body{background:#111;color:#ddd;font:13px/1.5 Consolas,monospace;padding:16px}.bad{color:#ff7a6b}.ok{color:#6fd48b}</style></head>
+<body><h3>Crate size reading on frames from real merchant clips (exe with --dev)</h3><pre id="out">running…</pre>
+<script type="module">
+// Frames are 2560x1440 captures (tools/_test/clip_*.png). Points are cursor positions; the reader works on a
+// 1080p-sized copy of a 520 px box around the cursor, as it does live (screen.js readSize).
+import { crateSizeAt, parseTooltip } from '../screen.js';
+const P = (px, py) => [1650 + px, 140 + py]; // offsets measured on the merchant panel crop
+const cases = [
+  ['clip_2.png', ...P(130, 360), '2x2'], ['clip_2.png', ...P(40, 230), '1x1'], ['clip_2.png', ...P(720, 300), '1x2'],
+  ['clip_2.png', ...P(300, 280), '1x2'], ['clip_2.png', ...P(560, 560), '2x2'], ['clip_2.png', ...P(300, 720), '2x3'],
+  ['clip_30.png', ...P(215, 395), '2x2'], ['clip_40.png', ...P(300, 360), '2x2'], ['clip_50.png', ...P(560, 265), '1x2'],
+  ['clip_2.png', ...P(570, 900), '2x3'],
+  // the cursor spots where the tooltip was showing (hovered crate is lighter, tooltip covers part of it)
+  ['clip_2.png', 1847, 568, '2x2'], ['clip_30.png', 1935, 603, '2x2'], ['clip_40.png', 2068, 595, '2x2'], ['clip_50.png', 2280, 456, '1x2'],
+  ...[[66, 205, '1x1'], [151, 205, '1x1'], [236, 205, '1x1'], [321, 205, '1x1'], [450, 205, '1x2'], [620, 205, '1x2'], [748, 248, '1x2'],
+    [108, 290, '1x2'], [279, 290, '1x2'], [450, 290, '1x2'], [620, 290, '1x2'], [66, 418, '1x2'], [364, 418, '2x2'], [535, 418, '2x2'], [705, 418, '2x2'],
+    [108, 589, '2x2'], [279, 589, '2x2'], [450, 589, '2x2'], [620, 589, '2x2'], [151, 760, '2x3'], [407, 760, '2x3'], [620, 800, '2x3'],
+    [279, 930, '2x2'], [450, 930, '2x2']].map(([x, y, s]) => ['clip_2.png', ...P(x, y), s])
+];
+const tips = [['tip_2.png', 'Mystery Cargo', 70000, 56000], ['tip_30.png', 'Flammables', 20000, 16000], ['tip_40.png', 'Household Items', 100000, 80000], ['tip_50.png', 'Uncommon Mystery Cargo', 250000, 200000]];
+const ui = 1440 / 1080, half = Math.round(260 * ui), down = 1 / ui, bmps = {};
+const lines = []; let ok = 0;
+for (const [f, cx, cy, truth] of cases) {
+  const bmp = bmps[f] || (bmps[f] = await createImageBitmap(await (await fetch('_test/' + f)).blob()));
+  const x = Math.max(0, cx - half), y = Math.max(0, cy - half), w = Math.min(bmp.width - x, half * 2), h = Math.min(bmp.height - y, half * 2);
+  const W = Math.round(w * down), H = Math.round(h * down);
+  const c = new OffscreenCanvas(W, H).getContext('2d'); c.drawImage(bmp, x, y, w, h, 0, 0, W, H);
+  const d = c.getImageData(0, 0, W, H).data, g = new Uint8Array(W * H);
+  for (let i = 0; i < g.length; i++) g[i] = (d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8;
+  const dbg = {}, s = crateSizeAt(g, W, H, Math.round((cx - x) * down), Math.round((cy - y) * down), dbg);
+  const got = s ? `${Math.min(s.w, s.h)}x${Math.max(s.w, s.h)}` : 'none (' + dbg.fail + ')';
+  if (got === truth) ok++;
+  lines.push(`<span class="${got === truth ? 'ok' : 'bad'}">${f} ${cx},${cy}  want ${truth}  got ${got}</span>`);
+}
+lines.unshift(`<b>Size: ${ok}/${cases.length} right</b>`);
+let tok = 0;
+for (const [f, name, price, paid] of tips) {
+  const r = await (await fetch(`/api/ocr?scale=1.5&file=${encodeURIComponent('tools/_test/' + f)}`)).json();
+  const t = parseTooltip(r.lines), good = t && t.typeName === name && t.price === price && t.paid === paid;
+  if (good) tok++;
+  lines.push(`<span class="${good ? 'ok' : 'bad'}">${f}  want ${name} ${price} (paid ${paid})  got ${t ? `${t.typeName} ${t.price} (paid ${t.paid})` : 'nothing'}</span>`);
+}
+lines.splice(1, 0, `<b>Tooltip + sale price: ${tok}/${tips.length} right</b>`);
+document.getElementById('out').innerHTML = lines.join('\n');
+</script></body></html>

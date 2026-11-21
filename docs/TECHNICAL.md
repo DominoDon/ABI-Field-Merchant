@@ -20,12 +20,12 @@ Requirements for building: Windows with the .NET Framework 4.x C# compiler (ship
 | `merchantData.js` | Parses the abibuilder merchant page into the game data; used for automatic data updates and by `tools/gen-data.js`. |
 | `audioListener.js` | Stream client, onset detector and the two-stage matcher (also used by `tools/eval.html`). |
 | `audioWorker.js` | Background worker that runs `audioListener.js` so the window never freezes. |
-| `screen.js` | Merchant screen reading: tooltip OCR, crate size from grid lines, purchase line. **Rough draft** until tuned on real F8 snapshots. |
+| `screen.js` | Merchant screen reading: tooltip OCR (incl. sale prices), crate size from the grid, grabbing a crate, purchase line. |
 | `data.js` | Generated game data (sounds, items, cargo pools). **Do not edit** — run `tools/gen-data.js`. |
 | `tools/gen-data.js` | Regenerates `data.js` from abibuilder.com/merchant (`node tools/gen-data.js`). |
 | `tools/build.ps1` | Build (see below). `tools/make-icon.ps1` makes `app.ico`. |
 | `tools/eval.html` | Accuracy test (`http://localhost:5173/tools/eval.html`, `?modes=band,broad`). |
-| `tools/screen-test.html` | Screen-reading test on images in `tools/_test/` (needs the exe with `--dev`). |
+| `tools/screen-test.html`, `tools/size-test.html` | Screen-reading tests on images in `tools/_test/` (need the exe with `--dev`). `size-test` uses frames from real merchant clips (`clip_*.png`, `tip_*.png`); they show other players' names, so they are git-ignored: put your own 2560×1440 frames there. |
 
 ## How it works (in detail)
 **Exe endpoints**
@@ -65,14 +65,27 @@ Requirements for building: Windows with the .NET Framework 4.x C# compiler (ship
 - `tools/eval.html`: 38 pick-up sounds × 9 conditions incl. voice chat → 321 right / 0 wrong; 0/32 non-cargo sounds;
   0 reports from 30 s of voice chat. All 76 of neverh8me's in-game recordings are recognised correctly.
 
-**Screen (`screen.js`, rough draft)** — only while the cursor is visible (hidden while aiming in a raid):
-- Cursor rests on the merchant panel → crate outline measured right away (before the tooltip covers it) on a
-  1080p-sized copy → size; after ~350 ms the tooltip is OCR'd → crate type (fuzzy match to the 19 names) + price
-  (snapped to a real pool price).
+**Screen (`screen.js`)** — only while the cursor is visible (hidden while aiming in a raid). On frames from real
+merchant clips (`tools/size-test.html`): crate size 37/38, tooltip + sale price 4/4.
+- **Size:** cursor resting on the merchant panel → a 1080p-sized copy around it. The grid's cell size and offset come
+  from where frame lines sit (cell ≈ 64 px at that scale); then every 1–3 × 1–3 box holding the cursor's cell is scored
+  (outline = frame line, inside = none). Each edge is sampled near both ends (the crate icon sits on inner grid
+  lines), frame pixels must be clearly brighter than the panel (hovered crates show faint inner lines, ~+10 vs ~+60),
+  and edges under the very dark tooltip are left out (it appears almost instantly, so it is usually on screen).
+- **Tooltip:** OCR'd after ~350 ms → crate type (fuzzy match to the 19 names) + price line.
+- **Sale prices:** discounted crates show "56,000 ~~70,000~~". The odds use the original (pool) price; the verdict,
+  raid plan, purchase matching and logged purchases (`paid`) use what you pay. If OCR loses the struck-through number,
+  the usual discounts (20 %, 10 %, 15 %, 25 %, 30 %, 50 %) are undone from the sale price to find a pool price.
+- **Grabbing:** the left button going down on the crate just read (inside its measured outline, or near where its
+  tooltip was read) → `drag` event. In the game the slot goes dark and a red footprint with "R Rotate" follows the
+  cursor. A sound within 4 s belongs to the grabbed crate even if the cursor passes other crates. No size yet →
+  measured at the press. Grabs are written to app.log.
 - Every 2.5 s the top of the panel is OCR'd: "Purchase"/"Sell" → merchant open; "spent X Koen … obtained [item]"
-  (shows other players' buys too) → **logged automatically** (with Undo) when it matches a crate you *dragged* in the last
-  90 s and the item fits that crate + sound + size; if it only matches a crate you hovered, the app asks "Was it you?".
-  A balance check ("Owned" dropping by X) can make this certain once tuned on real F8 snapshots.
+  (shows other players' buys too) → **logged automatically** (with Undo) when X is what a crate you *dragged* in the
+  last 90 s costs and the item fits that crate + sound + size; if it only matches a crate you hovered, the app asks
+  "Was it you?".
+- Seen on real clips, not used yet: "Purchase (3/4)" (buys left minus the cart), "Owned" (balance), the cart (F adds
+  a crate; red band with a cart icon), the merchant's hint ("highest quality … N mystery cargo(s) worth over 180,000 Koen").
 
 **Odds (`app.js`)**: a crate is (map profile, cargo type, price). It rolls a loot group by group weight, then an item by
 item weight; the sound and size narrow it, renormalised. Real purchases refine it (merchant data counts as 20 purchases):

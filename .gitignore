@@ -13,3 +13,7 @@ desktop.ini
 .vs/
 .vscode/
 *.log
+
+# Frames from personal gameplay clips (other players' names in the purchase line)
+tools/_test/clip_*.png
+tools/_test/tip_*.png

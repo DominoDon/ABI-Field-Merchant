@@ -70,8 +70,9 @@ item sounds (downloaded from abibuilder.com) and with in-game recordings from th
 only shows a result when the match is clear. Gunshots, footsteps and voice chat are ignored.
 
 **2. Looking.** While the merchant screen is open, the app takes screenshots of the game window, the way any
-recording app does, and uses Windows' built-in text recognition (OCR) to read the crate's name and price. It
-measures the crate's outline to get its size. It also reads the purchase line, so your buys can be logged
+recording app does, and uses Windows' built-in text recognition (OCR) to read the crate's name and price (on a sale,
+both the sale price you pay and the original price the odds are listed under). It measures the crate's outline on
+the grid to get its size, and notices which crate you grab, so the sound is matched to the right one. It also reads the purchase line, so your buys can be logged
 automatically. This part is still an early version.
 
 **3. Calculating.** abibuilder.com publishes the merchant's loot tables: for each map and crate, which loot groups
