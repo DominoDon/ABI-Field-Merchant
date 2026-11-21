@@ -82,6 +82,8 @@ class WorkerListener {
 const listener = new WorkerListener();
 
 const itemsById = new Map(GAME_DATA.items.map(i => [i.id, i]));
+// one line to the exe's app.log (detections, grabs), so real game behaviour can be checked and tuned
+function logLine(m) { try { fetch('/api/log?m=' + encodeURIComponent(m)).catch(() => { }); } catch (e) { } }
 const soundsById = new Map(GAME_DATA.sounds.map(s => [s.id, s]));
 // sounds are shown by name only (the game's sound numbers mean nothing to a player)
 const soundLabel = (id) => (soundsById.get(id) || {}).name || 'Unknown sound';
@@ -190,9 +192,12 @@ function cratesForProfile(profile) {
 // `sound` is a sound id, or a close-call mix [{ soundId, w }] (w = how well each matched): then each sound's
 // items are weighted by w × the crate's own odds, i.e. P(item | crate, what was heard).
 // Returns null when the crate doesn't exist on that map, { empty: true } when nothing fits.
-function crateStats(profile, crateKey, sound, size) {
+// `paid`: what you actually pay when the merchant has it on sale (the odds stay those of the original price);
+// by default the sale price read from the screen for the crate in focus.
+function crateStats(profile, crateKey, sound, size, paid) {
   const crate = crateOdds(profile, crateKey);
   if (!crate) return null;
+  const cost = paid || (crateKey === state.crate && state.crateFromScreen && state.paid) || crate.price;
   const mix = Array.isArray(sound) ? sound : sound ? [{ soundId: sound, w: 1 }] : null;
   const wOf = mix ? new Map(mix.map(m => [m.soundId, m.w])) : null;
   const fits = (it) => !size || sizeKey(it.size) === size;
@@ -205,12 +210,12 @@ function crateStats(profile, crateKey, sound, size) {
   const single = mix && mix.length === 1 ? mix[0].soundId : null;
   const refined = single ? refineWithPurchases(list, crate.typeId, crate.price, single) : null;
   const ev = list.reduce((a, x) => a + x.p * valueOf(x.item), 0);
-  const win = list.reduce((a, x) => a + (valueOf(x.item) > crate.price ? x.p : 0), 0);
+  const win = list.reduce((a, x) => a + (valueOf(x.item) > cost ? x.p : 0), 0);
   const red = list.reduce((a, x) => a + (x.item.rarity === 6 ? x.p : 0), 0);
-  const profit = ev - crate.price;
+  const profit = ev - cost;
   const tag = profit > 0 && win >= 0.5 ? 'buy' : profit > 0 ? 'maybe' : 'skip';
   list.sort((a, b) => b.p - a.p || valueOf(b.item) - valueOf(a.item));
-  return { crate, list, refined, ev, win, red, profit, tag };
+  return { crate, cost, list, refined, ev, win, red, profit, tag };
 }
 
 // ------------------------------------------------------------------ rendering: top bar + crate
@@ -238,7 +243,8 @@ function renderCrate() {
     $('crate-title').className = 'crate-name';
     $('crate-title').textContent = GAME_DATA.types[crate.typeId] || 'Crate';
     const n = crate.odds.size;
-    $('crate-sub').innerHTML = `<span class="koen num">${KOEN}${fmt(crate.price)}</span><span class="muted">· ${n} possible items</span>`;
+    const paidNow = state.crateFromScreen ? state.paid : 0;
+    $('crate-sub').innerHTML = `<span class="koen num">${KOEN}${priceHtml(paidNow, crate.price)}</span>${paidNow && paidNow < crate.price ? '<span class="sale">On sale</span>' : ''}<span class="muted">· ${n} possible items</span>`;
   }
   $('crate-auto').innerHTML = state.crateFromScreen && crate ? '<span class="auto-tag">From screen</span>' : '';
   renderSizes();
@@ -358,7 +364,7 @@ function renderResults() {
         <div>
           <span class="badge ${st.tag}">${label}</span>
           <div class="profit num ${st.profit >= 0 ? 'good' : 'bad'}">${st.profit >= 0 ? '+' : '−'}${fmt(Math.abs(st.profit))}</div>
-          <div class="evline">Expected ${state.valueMode === 'market' ? 'market ' : ''}value <b class="num">${fmt(st.ev)}</b> for <b class="num">${fmt(st.crate.price)}</b></div>
+          <div class="evline">Expected ${state.valueMode === 'market' ? 'market ' : ''}value <b class="num">${fmt(st.ev)}</b> for <b class="num">${priceHtml(st.cost, st.crate.price)}</b></div>
           <div class="chips-line">
             <span class="tagc num">${list.length} possible item${list.length === 1 ? '' : 's'}</span>
             <span class="tagc num" title="80% of the time the item is worth between these">${range[0] === range[1] ? fmtK(range[0]) : `80%: ${fmtK(range[0])} – ${fmtK(range[1])}`}</span>
@@ -431,6 +437,9 @@ const SHARED_GROUPS = ['med_comp', 'container_big_metal', 'med_fabric', 'acc_fue
   'acc_statue', 'coin', 'med_glass', 'acc_clock', 'acc_teapot', 'necklace', 'med_paper', 'small_paper', 'med_statue',
   'big_paper', 'acc_radio'];
 const typeIdByName = new Map(Object.entries(GAME_DATA.types).map(([id, n]) => [n.toLowerCase(), Number(id)]));
+// "56,000 70,000" (original struck through) when on sale
+const priceHtml = (paid, price) => paid && paid < price
+  ? `${fmt(paid)} <s class="was">${fmt(price)}</s>` : fmt(price);
 const poolPrices = (typeId) => [...new Set(GAME_DATA.pools.filter(p => p.typeId === typeId).map(p => p.price))];
 const purchases = { shared: store.get('shared-purchases', []), mine: store.get('my-purchases', []) };
 
@@ -474,11 +483,12 @@ function refineWithPurchases(list, typeId, price, soundId) {
   return { n, mine };
 }
 
-function logPurchase({ soundId, typeId, price, itemId, size }) {
+function logPurchase({ soundId, typeId, price, paid, itemId, size }) {
   const rec = { soundId, typeId, price, itemId, size, profile: state.profile, map: state.mapKey, t: Date.now() };
+  if (paid && paid < price) rec.paid = paid; // bought on sale (price stays the pool price: it keys the odds)
   purchases.mine.push(rec);
   store.set('my-purchases', purchases.mine);
-  addToSession(price, itemId);
+  addToSession(rec.paid || price, itemId);
   state.boughtThisRaid++;
   return rec;
 }
@@ -550,7 +560,7 @@ async function refreshLearnedStats(all) {
 function unlogPurchase(rec) {
   const i = purchases.mine.indexOf(rec);
   if (i >= 0) { purchases.mine.splice(i, 1); store.set('my-purchases', purchases.mine); }
-  const j = session.buys.findIndex(b => b.t >= rec.t - 5 && b.itemId === rec.itemId && b.price === rec.price);
+  const j = session.buys.findIndex(b => b.t >= rec.t - 5 && b.itemId === rec.itemId && b.price === (rec.paid || rec.price));
   if (j >= 0) { session.buys.splice(j, 1); store.set('session', session); }
   state.boughtThisRaid = Math.max(0, state.boughtThisRaid - 1);
 }
@@ -558,7 +568,7 @@ function unlogPurchase(rec) {
 function recordPurchase(itemId) {
   const crate = crateOdds(state.profile, state.crate);
   if (!crate || !state.soundId) return;
-  logPurchase({ soundId: state.soundId, typeId: crate.typeId, price: crate.price, itemId, size: state.size });
+  logPurchase({ soundId: state.soundId, typeId: crate.typeId, price: crate.price, paid: state.crateFromScreen ? state.paid : 0, itemId, size: state.size });
   learnFromPurchase(state.detection, itemId);
   if (current && current.crateKey === state.crate) { const i = seen.indexOf(current); if (i >= 0) seen.splice(i, 1); current = null; }
   render();
@@ -654,7 +664,7 @@ async function initAudio() {
   });
   listener.on('level', setLevel);
   // every detection goes to the exe's app.log, so real game scores can be checked and the matcher tuned
-  const logLine = (m) => { try { fetch('/api/log?m=' + encodeURIComponent(m)).catch(() => { }); } catch (e) { } };
+
   listener.on('confirm', c => {
     logLine(`drop confirmed ${soundLabel(c.soundId || (state.detection || {}).soundId)}`);
     if (state.detection && state.detection.time === c.time) { state.detection.confirmed = true; renderSound(); }
@@ -666,6 +676,11 @@ async function initAudio() {
     state.recent.unshift(m);
     state.recent = state.recent.slice(0, 8);
     // the sound belongs to the crate the cursor was just on (dragging starts on a hovered crate)
+    // a crate grabbed in the last 4 s owns this sound; otherwise the crate the cursor was just on
+    const grabbed = seen.find(s => s.dragAt && Date.now() - s.dragAt < 4000);
+    if (grabbed && grabbed !== current) {
+      current = grabbed; state.crate = grabbed.crateKey; state.size = grabbed.size || ''; state.paid = grabbed.paid || 0; state.crateFromScreen = true;
+    }
     if (current && Date.now() - current.at < 20000) { current.soundId = m.soundId; current.mix = m.alts || null; current.match = m; current.at = Date.now(); }
     setSound(m.soundId, m);
     if (state.chime) {
@@ -708,6 +723,8 @@ function applyHover(h) {
   const prev = seen.find(s => s.crateKey === crateKey && s.size === h.size && Math.abs(s.cursor.x - h.cursor.x) < 60 && Math.abs(s.cursor.y - h.cursor.y) < 60);
   current = prev || { crateKey, typeId: h.typeId, typeName: h.typeName, price: h.price, size: h.size, soundId: null, cursor: h.cursor };
   current.at = Date.now();
+  if (h.paid) current.paid = h.paid;
+  state.paid = current.paid || 0;
   if (!prev) { seen.unshift(current); if (seen.length > 40) seen.pop(); }
   if (!cratesForProfile(state.profile).some(c => c.key === crateKey)) {
     const others = mapChoices().filter(c => c.profile !== state.profile && cratesForProfile(c.profile).some(x => x.key === crateKey));
@@ -730,7 +747,7 @@ const STRATEGY = {
 
 function renderSeen() {
   const strat = STRATEGY[state.strategy] || STRATEGY.profit;
-  const rows = seen.map(s => ({ s, st: crateStats(state.profile, s.crateKey, s.mix && s.mix.length > 1 ? s.mix : s.soundId, s.size) }))
+  const rows = seen.map(s => ({ s, st: crateStats(state.profile, s.crateKey, s.mix && s.mix.length > 1 ? s.mix : s.soundId, s.size, s.paid) }))
     .filter(r => r.st && !r.st.empty)
     .sort((a, b) => strat.score(b.st) - strat.score(a.st));
   $('seen-card').style.display = rows.length ? '' : 'none';
@@ -741,7 +758,7 @@ function renderSeen() {
   if (plan.length) {
     const ev = plan.reduce((a, r) => a + r.st.profit, 0);
     const anyRed = 1 - plan.reduce((a, r) => a * (1 - r.st.red), 1);
-    const spend = plan.reduce((a, r) => a + r.st.crate.price, 0);
+    const spend = plan.reduce((a, r) => a + r.st.cost, 0);
     $('raid-plan').innerHTML = `<b>Raid plan</b> · buy the ${plan.length === 1 ? 'top crate' : `top ${plan.length}`} below
       → <span class="num ${ev >= 0 ? 'good' : 'bad'}">${ev >= 0 ? '+' : '−'}${fmtK(Math.abs(ev))}</span> expected for <span class="num">${fmtK(spend)}</span>
       ${anyRed > 0 ? `· <span class="redc">${pct(anyRed)}% chance of at least one red</span>` : ''}`;
@@ -755,7 +772,7 @@ function renderSeen() {
     const { s, st } = r;
     return `<div class="seen ${s === current ? 'cur' : ''} ${planSet.has(s) ? 'plan' : ''}" data-i="${seen.indexOf(s)}">
       <span class="rk">${planSet.has(s) ? '★' : i + 1}</span>
-      <span class="wt">${esc(s.typeName)}<small class="num">${fmt(s.price)}${s.size ? ' · ' + sizeLabel(s.size) : ''} · ${s.soundId ? esc(soundLabel(s.soundId)) : 'not dragged yet'}</small></span>
+      <span class="wt">${esc(s.typeName)}<small class="num">${priceHtml(s.paid, s.price)}${s.size ? ' · ' + sizeLabel(s.size) : ''} · ${s.soundId ? esc(soundLabel(s.soundId)) : 'not dragged yet'}</small></span>
       <span class="rd">${st.red > 0 ? `red ${pct(st.red)}%` : ''}</span>
       <span class="pf num ${st.profit >= 0 ? 'good' : 'bad'}">${st.profit >= 0 ? '+' : '−'}${fmtK(Math.abs(st.profit))}</span>
     </div>`;
@@ -773,6 +790,12 @@ function showBuyPrompt() {
 function initScreen() {
   reader.on('status', s => setScreenStatus(s.open ? 'Merchant open' : s.why === 'no-game' ? 'Merchant' : 'Merchant closed', s.open ? 'on' : ''));
   reader.on('hover', applyHover);
+  // a crate grabbed in the game: it owns the next sound (see the match handler)
+  reader.on('drag', d => {
+    applyHover(d);
+    if (current) { current.dragAt = Date.now(); if (d.size) current.size = d.size; }
+    logLine(`grabbed ${d.typeName} ${d.price}${d.paid && d.paid < d.price ? ' (on sale ' + d.paid + ')' : ''}${d.size ? ' ' + d.size : ''}`);
+  });
   reader.on('feed', f => {
     // The purchase line shows other players' buys too. Strong evidence it's yours: a crate you DRAGGED
     // (its sound was heard) in the last 90 s, same price, and the revealed item fits that crate + sound + size
@@ -782,9 +805,10 @@ function initScreen() {
       const st = crateStats(state.profile, s.crateKey, s.mix && s.mix.length > 1 ? s.mix : s.soundId, s.size);
       return !!(st && !st.empty && st.list.some(x => x.item.id === f.itemId));
     };
-    const strong = seen.find(s => s.price === f.price && s.match && now - s.match.time < 90000 && fitsCrate(s));
+    const spentOn = (s) => (s.paid || s.price) === f.price || s.price === f.price; // the line shows what was spent
+    const strong = seen.find(s => spentOn(s) && s.match && now - s.match.time < 90000 && fitsCrate(s));
     if (strong) { autoLog(strong, f); return; }
-    const c = seen.find(s => s.price === f.price && now - s.at < 180000);
+    const c = seen.find(s => spentOn(s) && now - s.at < 180000);
     const crate = c && crateOdds(state.profile, c.crateKey);
     if (!c || !crate || !crate.odds.has(f.itemId)) return;
     pendingBuy = { ...f, crate: c };
@@ -841,7 +865,7 @@ $('map-select').addEventListener('change', e => {
   state.mapKey = c.key; state.profile = c.profile; store.set('map', c.key); store.set('profile', c.profile);
   renderPickers(); render();
 });
-$('crate-select').addEventListener('change', e => { state.crate = e.target.value; state.crateFromScreen = false; store.set('crate', state.crate); render(); });
+$('crate-select').addEventListener('change', e => { state.crate = e.target.value; state.crateFromScreen = false; state.paid = 0; store.set('crate', state.crate); render(); });
 $('size-picker').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   state.size = b.dataset.size; store.set('size', state.size); render();
@@ -859,7 +883,7 @@ $('play-drop').addEventListener('click', () => play('drop'));
 $('seen-list').addEventListener('click', e => {
   const row = e.target.closest('.seen'); if (!row) return;
   const s = seen[Number(row.dataset.i)]; if (!s) return;
-  current = s; state.crate = s.crateKey; state.size = s.size; state.soundId = s.soundId; state.crateFromScreen = true;
+  current = s; state.crate = s.crateKey; state.size = s.size; state.soundId = s.soundId; state.crateFromScreen = true; state.paid = s.paid || 0;
   renderPickers(); render();
 });
 $('seen-clear').addEventListener('click', () => { seen.length = 0; current = null; state.boughtThisRaid = 0; render(); });
@@ -875,7 +899,7 @@ $('buys-seg').addEventListener('click', e => {
 $('buy-yes').addEventListener('click', () => {
   if (pendingBuy) {
     const c = pendingBuy.crate;
-    logPurchase({ soundId: c.soundId, typeId: c.typeId, price: c.price, itemId: pendingBuy.itemId, size: c.size });
+    logPurchase({ soundId: c.soundId, typeId: c.typeId, price: c.price, paid: c.paid, itemId: pendingBuy.itemId, size: c.size });
     learnFromPurchase(c.match, pendingBuy.itemId);
     const i = seen.indexOf(c); if (i >= 0) seen.splice(i, 1);
   }
@@ -885,12 +909,12 @@ $('buy-yes').addEventListener('click', () => {
 // Auto-recorded purchase: logged right away, with a short Undo window
 let autoUndo = null;
 function autoLog(c, f) {
-  const rec = logPurchase({ soundId: c.soundId, typeId: c.typeId, price: c.price, itemId: f.itemId, size: c.size });
+  const rec = logPurchase({ soundId: c.soundId, typeId: c.typeId, price: c.price, paid: c.paid, itemId: f.itemId, size: c.size });
   learnFromPurchase(c.match, f.itemId);
   const i = seen.indexOf(c); if (i >= 0) seen.splice(i, 1);
   if (current === c) current = null;
   const it = itemsById.get(f.itemId);
-  $('auto-text').innerHTML = `<b style="color:var(--r${it ? it.rarity : 1})">${esc(it ? it.name : '?')}</b> from ${esc(c.typeName)} for <b class="num">${fmt(c.price)}</b>`;
+  $('auto-text').innerHTML = `<b style="color:var(--r${it ? it.rarity : 1})">${esc(it ? it.name : '?')}</b> from ${esc(c.typeName)} for <b class="num">${fmt(c.paid || c.price)}</b>`;
   $('auto-toast').style.display = '';
   clearTimeout(autoUndo && autoUndo.timer);
   autoUndo = { rec, crate: c, timer: setTimeout(() => { $('auto-toast').style.display = 'none'; autoUndo = null; }, 12000) };
@@ -913,9 +937,9 @@ $('session-export').addEventListener('click', () => {
   const rows = [['Date', 'Time', 'Map', 'Crate', 'Price', 'Size', 'Sound', 'Item', 'Rarity', 'Hand-in value', 'Market value', 'Profit (hand-in)']];
   for (const r of purchases.mine) {
     const it = itemsById.get(r.itemId), d = new Date(r.t);
-    rows.push([d.toLocaleDateString(), d.toLocaleTimeString(), r.map ? r.map.replace('|', ' · ') : (r.profile || ''), GAME_DATA.types[r.typeId] || r.typeId, r.price, r.size || '',
+    rows.push([d.toLocaleDateString(), d.toLocaleTimeString(), r.map ? r.map.replace('|', ' · ') : (r.profile || ''), GAME_DATA.types[r.typeId] || r.typeId, r.paid || r.price, r.size || '',
       r.soundId ? soundLabel(r.soundId) : '', it ? it.name : r.itemId, it ? ['', 'white', 'green', 'blue', 'purple', 'gold', 'red'][it.rarity] : '',
-      it ? it.value : '', it ? it.market || '' : '', it ? it.value - r.price : '']);
+      it ? it.value : '', it ? it.market || '' : '', it ? it.value - (r.paid || r.price) : '']);
   }
   const blob = new Blob(['﻿' + rows.map(r => r.map(q).join(',')).join('\r\n')], { type: 'text/csv' });
   const a = document.createElement('a');

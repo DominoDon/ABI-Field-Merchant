@@ -8,6 +8,9 @@
 // What it reads:
 //   hover  - when the cursor rests on a crate, the tooltip: crate name + price -> crate type and pool price
 //   size   - the crate's outline under the cursor (grid lines) -> 1x1 / 1x2 / 2x2 / 2x3
+//   drag   - the left button goes down on the crate just read (or on a fresh outline): the crate you are
+//            dragging, so the sound heard next belongs to it. In the game the crate's slot goes dark and a red
+//            footprint with an "R Rotate" hint follows the cursor; the size comes from the slot outline.
 //   feed   - "... spent 250,000 Koen on a mystery cargo and obtained [Item]" (shows other players' buys too,
 //            so the app only *offers* to log it when the price matches the crate you were just on)
 import { GAME_DATA } from './data.js';
@@ -51,10 +54,41 @@ export function matchType(text) {
 }
 
 export function parsePrice(text) {
-  const m = text.replace(/[oO]/g, '0').match(/(\d{1,3}(?:[,.\s]\d{3})+|\d{4,7})/);
-  if (!m) return null;
-  const v = Number(m[1].replace(/[^\d]/g, ''));
-  return v >= 1000 && v <= 5000000 ? v : null;
+  const all = parsePrices(text);
+  return all.length ? all[0] : null;
+}
+// Every price on a line, in order. A discounted crate shows "56,000 70,000": the sale price, then the
+// original price struck through (the odds are listed under the original price).
+export function parsePrices(text) {
+  const out = [], re = /(\d{1,3}(?:[,.]\d{3})+|\d{4,7})/g;
+  const s = text.replace(/[oO](?=[\d,.])|(?<=[\d,.])[oO]/g, '0');
+  let m;
+  while ((m = re.exec(s))) {
+    const v = Number(m[1].replace(/[^\d]/g, ''));
+    if (v >= 1000 && v <= 5000000) out.push(v);
+  }
+  return out;
+}
+// Common merchant discounts: when the struck-through price is unreadable, the sale price / (1 - d) is tried
+const DISCOUNTS = [0.2, 0.1, 0.15, 0.25, 0.3, 0.5];
+
+// The crate's pool (original) price and what you actually pay, from the numbers read on the price line
+export function resolvePrice(typeId, nums) {
+  if (!nums.length) return null;
+  // 1) a number that is itself a pool price; with two (sale + original) the original is the larger one
+  const snapped = nums.map(n => ({ n, p: snapPrice(typeId, n) })).filter(x => x.p);
+  if (snapped.length) {
+    const orig = snapped.reduce((a, b) => (b.p > a.p ? b : a));
+    const sale = nums.filter(n => n < orig.p * 0.98).sort((a, b) => b - a)[0];
+    return { price: orig.p, paid: sale && sale >= orig.p * 0.4 ? sale : orig.p };
+  }
+  // 2) only the sale price came through: undo a usual discount
+  const sale = Math.min(...nums);
+  for (const d of DISCOUNTS) {
+    const p = snapPrice(typeId, sale / (1 - d));
+    if (p) return { price: p, paid: sale };
+  }
+  return null;
 }
 
 // Snap an OCR'd price to a real pool price of that crate type (OCR may drop or misread a digit)
@@ -89,11 +123,11 @@ export function parseTooltip(lines) {
       if (j === i) continue;
       const below = lines[j].y - lines[i].y;
       if (below <= 0 || below > lines[i].h * 4) continue;
-      const raw = parsePrice(lines[j].text);
-      if (!raw) continue;
-      const price = snapPrice(t.id, raw);
-      if (!price) continue;
-      const cand = { typeId: t.id, typeName: t.name, price, rawPrice: raw, score: t.s, line: lines[i] };
+      const nums = parsePrices(lines[j].text);
+      if (!nums.length) continue;
+      const pr = resolvePrice(t.id, nums);
+      if (!pr) continue;
+      const cand = { typeId: t.id, typeName: t.name, price: pr.price, paid: pr.paid, rawPrice: nums[0], score: t.s, line: lines[i] };
       if (!best || cand.score > best.score) best = cand;
     }
   }
@@ -115,8 +149,131 @@ export function parseFeed(lines) {
 }
 
 // ---------------------------------------------------------------- crate size from grid lines
-// gray: Uint8Array w*h of a crop centred on the cursor. Returns { w, h, P } in cells or null.
+// The merchant panel is a square grid; each crate is a block of cells framed by a light line, with no lines
+// inside it (just its name label and icon). So: find the grid (cell size + offset) from where lines sit,
+// then, starting at the cursor's cell, join neighbouring cells while no frame line separates them.
+// gray: Uint8Array w*h of a crop around the cursor. Returns { w, h, P, box } in cells/crop px, or null.
 export function crateSizeAt(gray, w, h, cx, cy, dbg = {}) {
+  const { vline, hline } = lineMaps(gray, w, h);
+  // the tooltip (very dark box, next to the cursor) hides part of the grid: edges under it don't count
+  const hidden = darkMask(gray, w, h);
+  // line profiles: how much of each column / row is line
+  const colP = new Float32Array(w), rowP = new Float32Array(h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; if (vline[i]) colP[x]++; if (hline[i]) rowP[y]++; }
+  // grid: the cell size P and offsets that put lattice lines on the strongest columns and rows
+  const comb = (prof, P) => {
+    let best = null;
+    for (let off = 0; off < P; off++) {
+      let s = 0, n = 0;
+      for (let x = off; x < prof.length; x += P) { s += Math.max(prof[x], prof[x - 1] || 0, prof[x + 1] || 0); n++; }
+      if (n >= 2 && (!best || s / n > best.s)) best = { off, s: s / n };
+    }
+    return best;
+  };
+  const meanC = colP.reduce((a, b) => a + b, 0) / w, meanR = rowP.reduce((a, b) => a + b, 0) / h;
+  const cands = [];
+  // a cell is ~64 px on the 1080p-sized copy the reader measures on (the game UI scales with the window)
+  for (let P = 46; P <= 86; P++) {
+    const cxm = comb(colP, P), cym = comb(rowP, P);
+    if (!cxm || !cym) continue;
+    // mild preference for the usual cell size, so a lattice of 1.25 cells can't win on a lucky crop
+    const prior = 1 - 0.4 * Math.abs(P - 64) / 64;
+    cands.push({ P, offX: cxm.off, offY: cym.off, s: (cxm.s / (meanC + 1) + cym.s / (meanR + 1)) * prior });
+  }
+  if (!cands.length) { dbg.fail = 'no grid'; return null; }
+  const top = cands.reduce((a, b) => (b.s > a.s ? b : a));
+  // multiples of the cell size line up too (crates are often 2 cells wide): take the smallest good one
+  let grid = top;
+  if (dbg.fixedP) grid = cands.reduce((a, b) => (Math.abs(b.P - dbg.fixedP) < Math.abs(a.P - dbg.fixedP) ? b : a));
+  else for (const c of cands.slice().sort((a, b) => a.P - b.P)) {
+    if (c.s >= top.s * 0.8 && top.P % c.P <= 2 || c.s >= top.s * 0.8 && c.P - (top.P % c.P) <= 2) { grid = c; break; }
+  }
+  const { P, offX, offY } = grid;
+  Object.assign(dbg, { grid });
+  // is there a frame line between two cells? A frame runs the whole edge; the crate icon (centred in the
+  // crate, often right on an inner grid line) and the name label only cover part of it. So the edge is
+  // sampled near each end and the weaker end counts.
+  const along = (fixed, from, len, vertical) => {
+    const part = (a, b) => {
+      let hit = 0, n = 0;
+      for (let s = Math.round(from + len * a); s < from + len * b; s++) {
+        const inRange = vertical ? s >= 0 && s < h : s >= 0 && s < w;
+        if (!inRange || (vertical ? hidden[s * w + fixed] : hidden[fixed * w + s])) continue; n++;
+        for (let d = -2; d <= 2; d++) {
+          const f = fixed + d;
+          if (vertical ? f >= 0 && f < w && vline[s * w + f] : f >= 0 && f < h && hline[f * w + s]) { hit++; break; }
+        }
+      }
+      return n >= 4 ? hit / n : null; // null: hidden / off the picture
+    };
+    const a = part(0.1, 0.3), b = part(0.7, 0.9);
+    return a === null ? b : b === null ? a : Math.min(a, b);
+  };
+  const vEdge = (i, j) => along(offX + (i + 1) * P, offY + j * P, P, true);   // between cell (i,j) and (i+1,j)
+  const hEdge = (i, j) => along(offY + (j + 1) * P, offX + i * P, P, false);  // between cell (i,j) and (i,j+1)
+  const inside = (i, j) => offX + i * P >= 0 && offX + (i + 1) * P < w && offY + j * P >= 0 && offY + (j + 1) * P < h;
+  const i0 = Math.floor((cx - offX) / P), j0 = Math.floor((cy - offY) / P);
+  if (!inside(i0, j0)) { dbg.fail = 'cursor cell outside'; return null; }
+  // Every rectangle (1-3 x 1-3 cells) holding the cursor's cell is scored: its outline should be frame line,
+  // its inside edges should not. Scoring whole outlines (instead of walking edge by edge) shrugs off a frame
+  // partly hidden by the tooltip or a label.
+  const memo = new Map(), known = (xs) => xs.filter(v => v !== null);
+  const ve = (i, j) => { const k = 'v' + i + ',' + j; if (!memo.has(k)) memo.set(k, vEdge(i, j)); return memo.get(k); };
+  const he = (i, j) => { const k = 'h' + i + ',' + j; if (!memo.has(k)) memo.set(k, hEdge(i, j)); return memo.get(k); };
+  let best = null;
+  for (let cw = 1; cw <= 3; cw++) for (let chh = 1; chh <= 3; chh++)
+    for (let i1 = i0 - cw + 1; i1 <= i0; i1++) for (let j1 = j0 - chh + 1; j1 <= j0; j1++) {
+      if (!inside(i1, j1) || !inside(i1 + cw - 1, j1 + chh - 1)) continue;
+      const outl = [], inn = [];
+      for (let j = j1; j < j1 + chh; j++) { outl.push(ve(i1 - 1, j), ve(i1 + cw - 1, j)); for (let i = i1; i < i1 + cw - 1; i++) inn.push(ve(i, j)); }
+      for (let i = i1; i < i1 + cw; i++) { outl.push(he(i, j1 - 1), he(i, j1 + chh - 1)); for (let j = j1; j < j1 + chh - 1; j++) inn.push(he(i, j)); }
+      const ko = known(outl), ki = known(inn);
+      if (ko.length < Math.max(2, outl.length / 2)) continue; // too little of the outline visible
+      const o = ko.reduce((a, b) => a + Math.min(1, b / 0.7), 0) / ko.length;
+      const n = ki.length ? ki.reduce((a, b) => a + Math.min(1, b / 0.7), 0) / ki.length : 0;
+      // more visible outline that is frame = more evidence (breaks ties toward the box that explains more)
+      const score = o - n + 0.015 * ko.length;
+      if (!best || score > best.score + 1e-9) best = { cw, chh, i1, j1, score, o, n };
+    }
+  Object.assign(dbg, { best });
+  if (!best || best.o < 0.6 || best.n > 0.35) { dbg.fail = 'no clear outline'; return null; }
+  const { cw, chh, i1, j1 } = best;
+  return { w: cw, h: chh, P, box: { L: offX + i1 * P, R: offX + (i1 + cw) * P, U: offY + j1 * P, D: offY + (j1 + chh) * P } };
+}
+
+// pixels near something very dark (the tooltip's box is far darker than the merchant panel)
+function darkMask(gray, w, h) {
+  const R = 3, dark = new Uint8Array(w * h), tmp = new Uint8Array(w * h), out = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) dark[i] = gray[i] < 34 ? 1 : 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let m = 0; for (let d = -R; d <= R && !m; d++) { const xx = x + d; if (xx >= 0 && xx < w) m = dark[y * w + xx]; } tmp[y * w + x] = m; }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let m = 0; for (let d = -R; d <= R && !m; d++) { const yy = y + d; if (yy >= 0 && yy < h) m = tmp[yy * w + x]; } out[y * w + x] = m; }
+  // only big dark areas (the tooltip, empty slots): thin dark strokes don't hide anything
+  return out;
+}
+
+// light line pixels (vertical / horizontal): brighter than both sides
+function lineMaps(gray, w, h) {
+  const vline = new Uint8Array(w * h), hline = new Uint8Array(w * h);
+  const DMAX = 4;
+  // crate frames are ~+60 brighter than the panel; the faint cell lines inside a hovered crate only ~+10
+  const T = lineMaps.T || 24;
+  for (let y = DMAX; y < h - DMAX; y++) {
+    for (let x = DMAX; x < w - DMAX; x++) {
+      const i = y * w + x, v = gray[i];
+      let cv = -255, ch = -255;
+      for (let d = 2; d <= DMAX; d++) {
+        cv = Math.max(cv, Math.min(v - gray[i - d], v - gray[i + d]));
+        ch = Math.max(ch, Math.min(v - gray[i - d * w], v - gray[i + d * w]));
+      }
+      if (cv > T) vline[i] = 1;
+      if (ch > T) hline[i] = 1;
+    }
+  }
+  return { vline, hline };
+}
+
+// the earlier outline walker (kept for comparison in tools/screen-test.html)
+export function crateSizeAtOld(gray, w, h, cx, cy, dbg = {}) {
   const vline = new Uint8Array(w * h), hline = new Uint8Array(w * h);
   const T = 8, DMAX = 6;
   for (let y = DMAX; y < h - DMAX; y++) {
@@ -189,13 +346,18 @@ export function crateSizeAt(gray, w, h, cx, cy, dbg = {}) {
   return { w: best.cw, h: best.chh, P: Math.round(best.P), box: { L, R, U, D } };
 }
 
+// "1x2" style key, smaller side first (crate orientation doesn't matter for the odds)
+const sizeKeyOf = (s) => `${Math.min(s.w, s.h)}x${Math.max(s.w, s.h)}`;
+
 // OCR enlargement: small text at 1080p needs 2x; at 4K the text is already big enough
 const ocrScale = (ui) => (ui < 1.2 ? 2 : ui < 1.7 ? 1.5 : 1);
 
 // ---------------------------------------------------------------- live reader
 export class MerchantReader {
   constructor() {
-    this.listeners = { hover: [], feed: [], status: [] };
+    this.listeners = { hover: [], drag: [], feed: [], status: [] };
+    this.lastHover = null;      // { typeId, typeName, price, paid, size, box (client px), cursor, t }
+    this.lmbWas = false;
     this.running = false;
     this.lastCursor = null; this.stillSince = 0; this.lastTooltipAt = 0;
     this.lastHoverKey = ''; this.seenFeed = new Set(); this.lastFeedAt = 0;
@@ -232,6 +394,12 @@ export class MerchantReader {
     if (moved) { this.stillSince = now; this.sizeTaken = false; }
     this.lastCursor = { x: st.cx, y: st.cy };
 
+    // drag: the button just went down on the panel. If it's on the crate just read (inside its outline, or
+    // close to where its tooltip was read), that crate is being dragged - its sound comes next.
+    const pressed = st.lmb && !this.lmbWas;
+    this.lmbWas = !!st.lmb;
+    if (pressed && canRead && onPanel && st.focused) await this.onPress(st, ui, now);
+
     // size: grab the outline right after the cursor settles (before the tooltip covers it)
     if (canRead && onPanel && st.focused && !st.lmb && !moved && !this.sizeTaken && now - this.stillSince > 60) {
       this.sizeTaken = true;
@@ -245,11 +413,14 @@ export class MerchantReader {
       const tip = r && parseTooltip(r.lines);
       if (tip) {
         this.setOpen(true);
-        const size = this.pendingSize ? `${Math.min(this.pendingSize.w, this.pendingSize.h)}x${Math.max(this.pendingSize.w, this.pendingSize.h)}` : '';
+        const ps = this.pendingSize;
+        const size = ps ? sizeKeyOf(ps) : '';
+        this.lastHover = { typeId: tip.typeId, typeName: tip.typeName, price: tip.price, paid: tip.paid, size,
+          box: ps && ps.client, cursor: { x: st.cx, y: st.cy }, t: now, P: this.cellP ? this.cellP * ui : 85 * ui / 1.333 };
         const key = `${tip.typeId}@${tip.price}#${size}@${Math.round(st.cx / 20)},${Math.round(st.cy / 20)}`;
         if (key !== this.lastHoverKey) {
           this.lastHoverKey = key;
-          this.emit('hover', { typeId: tip.typeId, typeName: tip.typeName, price: tip.price, size, at: Date.now(), cursor: { x: st.cx, y: st.cy } });
+          this.emit('hover', { typeId: tip.typeId, typeName: tip.typeName, price: tip.price, paid: tip.paid, size, at: Date.now(), cursor: { x: st.cx, y: st.cy } });
         }
       }
     }
@@ -270,6 +441,20 @@ export class MerchantReader {
         this.feedPrimed = true;
       }
     }
+  }
+
+  // Left button pressed on the panel: is it on the crate we just read?
+  async onPress(st, ui, now) {
+    const h = this.lastHover;
+    if (!h || now - h.t > 20000) return;
+    const P = h.P || 64 * ui;
+    const inBox = h.box && st.cx >= h.box.L - 4 && st.cx <= h.box.R + 4 && st.cy >= h.box.U - 4 && st.cy <= h.box.D + 4;
+    const near = !h.box && Math.abs(st.cx - h.cursor.x) < P * 0.6 && Math.abs(st.cy - h.cursor.y) < P * 0.6;
+    if (!inBox && !near) return;
+    let size = h.size;
+    // no size from the hover (quick grab, tooltip in the way): measure the slot under the press now
+    if (!size) { const s = await this.readSize(st, ui); if (s) size = sizeKeyOf(s); }
+    this.emit('drag', { typeId: h.typeId, typeName: h.typeName, price: h.price, paid: h.paid, size, at: Date.now(), cursor: { ...h.cursor } });
   }
 
   setOpen(open, why) {
@@ -302,6 +487,8 @@ export class MerchantReader {
       const sorted = this.cellSamples.slice().sort((a, b) => a - b);
       if (sorted.length >= 3) this.cellP = sorted[sorted.length >> 1];
     }
+    // outline in client pixels (for telling whether a later press is on this crate)
+    if (s && s.box) s.client = { L: x + s.box.L / down, R: x + s.box.R / down, U: y + s.box.U / down, D: y + s.box.D / down };
     return s;
   }
 }
