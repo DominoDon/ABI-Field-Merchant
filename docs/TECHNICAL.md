@@ -15,10 +15,14 @@ Requirements for building: Windows with the .NET Framework 4.x C# compiler (ship
 | File | What it is |
 |---|---|
 | `Launcher.cs` → `ABI-Field-Merchant.exe` | Native host (C# .NET 4.x, single file). Serves the app on `127.0.0.1:5173`, game audio capture, game-window capture + Windows OCR, reference-sound cache, F8 snapshots, tray icon, Chrome/Edge `--app` window. |
-| `index.html`, `app.js` | The app screen: top bar (map, crate, live status), crate + sizes with red chance, the heard sound (with close-call alternatives), verdict with red/profit gauges and 80% range, item cards, best buys + raid plan, session summary + CSV export, settings drawer (incl. self-check), prompts. |
+| `index.html`, `app.js` | The app screen: top bar (map, crate, live status), crate + sizes with red chance, the heard sound (with close-call alternatives), verdict with red/profit gauges (red-chance confidence), ROI and 80% range, item cards, best buys + raid plan, your alert thresholds, session panel + CSV export, settings drawer (incl. self-check), prompts. |
+| `views.js` | HTML for the decision strip (verdict · expected profit + ROI · red chance + confidence), the possible-contents rows and the Best buys rows. |
+| `session.js` | This play session's purchases: totals, best / worst buy, the "Copy for Discord" text. |
+| `purchaseOdds.js` | Refines the odds with real purchase results (yours + the public neverh8me base). |
+| `format.js` | Number / text formatting shared by the modules. |
 | `mini.html` | The small always-on-top window; mirrors the main window over a BroadcastChannel (does no listening). |
 | `merchantData.js` | Parses the abibuilder merchant page into the game data; used for automatic data updates and by `tools/gen-data.js`. |
-| `audioListener.js` | Stream client, onset detector and the two-stage matcher (also used by `tools/eval.html`). |
+| `audioListener.js` | Stream client, onset detector and the two-stage matcher (also used by `tools/eval.html`), plus `WorkerListener`, the window's handle on the audio worker. |
 | `audioWorker.js` | Background worker that runs `audioListener.js` so the window never freezes. |
 | `screen.js` | Merchant screen reading: tooltip OCR (incl. sale prices), crate size from the grid, grabbing a crate, purchase line. |
 | `data.js` | Generated game data (sounds, items, cargo pools). **Do not edit** — run `tools/gen-data.js`. |

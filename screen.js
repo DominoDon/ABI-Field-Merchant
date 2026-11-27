@@ -241,6 +241,23 @@ export function crateSizeAt(gray, w, h, cx, cy, dbg = {}) {
   return { w: cw, h: chh, P, box: { L: offX + i1 * P, R: offX + (i1 + cw) * P, U: offY + j1 * P, D: offY + (j1 + chh) * P } };
 }
 
+// Gray copy of an RGBA image shrunk by `f` (>= 1) by averaging each block of pixels. Averaging keeps thin grid
+// lines (a 2 px line at 4K stays a fainter 1 px line); a plain resize keeps or drops them depending on where they
+// fall. Live reading and the tests both use this, so they see exactly the same picture.
+export function grayDown(rgba, W, H, f = 1) {
+  const w = Math.max(1, Math.round(W / f)), h = Math.max(1, Math.round(H / f)), g = new Uint8Array(w * h);
+  for (let ty = 0; ty < h; ty++) {
+    const y0 = Math.floor(ty * f), y1 = Math.min(H, Math.max(y0 + 1, Math.floor((ty + 1) * f)));
+    for (let tx = 0; tx < w; tx++) {
+      const x0 = Math.floor(tx * f), x1 = Math.min(W, Math.max(x0 + 1, Math.floor((tx + 1) * f)));
+      let s = 0, n = 0;
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const i = (y * W + x) * 4; s += rgba[i] * 77 + rgba[i + 1] * 150 + rgba[i + 2] * 29; n++; }
+      g[ty * w + tx] = (s / n) >> 8;
+    }
+  }
+  return { g, w, h };
+}
+
 // pixels near something very dark (the tooltip's box is far darker than the merchant panel)
 function darkMask(gray, w, h) {
   const R = 3, dark = new Uint8Array(w * h), tmp = new Uint8Array(w * h), out = new Uint8Array(w * h);
@@ -362,18 +379,51 @@ export class MerchantReader {
     this.lastCursor = null; this.stillSince = 0; this.lastTooltipAt = 0;
     this.lastHoverKey = ''; this.seenFeed = new Set(); this.lastFeedAt = 0;
     this.merchantOpen = false; this.merchantSeenAt = 0;
+    this.log = () => { };       // set by the app: writes a line to app.log (for checking live play)
+    this.cropSaves = 0;         // merchant crops saved with each size reading (snapshots folder), for tuning on real frames
+    this.tickStats = { n: 0, sum: 0, max: 0, since: 0 };
   }
   on(e, cb) { this.listeners[e].push(cb); }
   emit(e, d) { this.listeners[e].forEach(cb => cb(d)); }
 
-  start() { if (!this.running) { this.running = true; this.loop(); } }
+  start() { if (!this.running) { this.running = true; this.loop(); this.pressLoop(); } }
   stop() { this.running = false; }
 
   async loop() {
     while (this.running) {
       let wait = 120;
+      const t0 = performance.now();
       try { await this.tick(); if (!this.gameUp) wait = 1500; /* game closed: check rarely */ }
       catch (e) { wait = 2000; /* server restarting/unreachable: back off */ }
+      if (this.merchantOpen) this.noteTick(performance.now() - t0);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+
+  // How long one screen-reading pass takes, written to app.log twice a minute while the merchant is open
+  noteTick(ms) {
+    const s = this.tickStats, now = performance.now();
+    if (!s.since) s.since = now;
+    s.n++; s.sum += ms; s.max = Math.max(s.max, ms);
+    if (now - s.since > 30000) {
+      this.log(`screen pass ${Math.round(s.sum / s.n)} ms avg, ${Math.round(s.max)} ms max (${s.n} passes)`);
+      this.tickStats = { n: 0, sum: 0, max: 0, since: now };
+    }
+  }
+
+  // The mouse button is watched on its own fast loop: the reading loop can be busy with OCR for a few hundred
+  // ms, and a grab must not be missed while it is.
+  async pressLoop() {
+    while (this.running) {
+      let wait = 40;
+      try {
+        const st = await (await fetch('/api/state', { cache: 'no-store' })).json();
+        if (!st.game) wait = 1500;
+        const pressed = st.game && st.lmb && !this.lmbWas;
+        this.lmbWas = !!st.lmb;
+        if (pressed && st.focused && st.cx > st.w * 0.45 && st.cx < st.w && st.cy > 0 && st.cy < st.h)
+          await this.onPress(st, st.h / 1080, performance.now());
+      } catch (e) { wait = 2000; }
       await new Promise(r => setTimeout(r, wait));
     }
   }
@@ -394,32 +444,29 @@ export class MerchantReader {
     if (moved) { this.stillSince = now; this.sizeTaken = false; }
     this.lastCursor = { x: st.cx, y: st.cy };
 
-    // drag: the button just went down on the panel. If it's on the crate just read (inside its outline, or
-    // close to where its tooltip was read), that crate is being dragged - its sound comes next.
-    const pressed = st.lmb && !this.lmbWas;
-    this.lmbWas = !!st.lmb;
-    if (pressed && canRead && onPanel && st.focused) await this.onPress(st, ui, now);
-
-    // size: grab the outline right after the cursor settles (before the tooltip covers it)
-    if (canRead && onPanel && st.focused && !st.lmb && !moved && !this.sizeTaken && now - this.stillSince > 60) {
+    // size: grab the outline right after the cursor settles (before the tooltip covers it). Only at the merchant:
+    // the lobby and other menus have no crate grid.
+    if (this.merchantOpen && canRead && onPanel && st.focused && !st.lmb && !moved && !this.sizeTaken && now - this.stillSince > 60) {
       this.sizeTaken = true;
-      this.pendingSize = await this.readSize(st, ui);
+      // measured in the background: the tooltip is read at the same time instead of after it
+      this.pendingSize = this.readSize(st, ui).catch(() => null);
     }
-    // tooltip: once the cursor has rested ~350 ms
-    if (canRead && onPanel && st.focused && !st.lmb && now - this.stillSince > 350 && now - this.lastTooltipAt > 600) {
+    // tooltip: once the cursor has rested ~200 ms (the game shows it almost at once)
+    if (canRead && onPanel && st.focused && !st.lmb && now - this.stillSince > 200 && now - this.lastTooltipAt > 600) {
       this.lastTooltipAt = now;
       const rx = Math.max(0, Math.round(st.cx - 120 * ui)), ry = Math.max(0, Math.round(st.cy - 80 * ui));
       const r = await this.ocr(rx, ry, Math.round(560 * ui), Math.round(300 * ui), ocrScale(ui));
       const tip = r && parseTooltip(r.lines);
       if (tip) {
         this.setOpen(true);
-        const ps = this.pendingSize;
+        const ps = await this.pendingSize;
         const size = ps ? sizeKeyOf(ps) : '';
         this.lastHover = { typeId: tip.typeId, typeName: tip.typeName, price: tip.price, paid: tip.paid, size,
           box: ps && ps.client, cursor: { x: st.cx, y: st.cy }, t: now, P: this.cellP ? this.cellP * ui : 85 * ui / 1.333 };
         const key = `${tip.typeId}@${tip.price}#${size}@${Math.round(st.cx / 20)},${Math.round(st.cy / 20)}`;
         if (key !== this.lastHoverKey) {
           this.lastHoverKey = key;
+          this.log(`read ${tip.typeName} ${tip.price}${tip.paid ? ' (sale ' + tip.paid + ')' : ''} size ${size || 'NONE (' + (this.lastSizeWhy || 'not measured') + ')'} at ${st.w}x${st.h}, ${Math.round(performance.now() - this.stillSince)} ms after the cursor stopped`);
           this.emit('hover', { typeId: tip.typeId, typeName: tip.typeName, price: tip.price, paid: tip.paid, size, at: Date.now(), cursor: { x: st.cx, y: st.cy } });
         }
       }
@@ -446,11 +493,14 @@ export class MerchantReader {
   // Left button pressed on the panel: is it on the crate we just read?
   async onPress(st, ui, now) {
     const h = this.lastHover;
-    if (!h || now - h.t > 20000) return;
+    if (!h || now - h.t > 20000) { if (this.merchantOpen) this.log('press on the panel: no crate read in the last 20 s'); return; }
     const P = h.P || 64 * ui;
     const inBox = h.box && st.cx >= h.box.L - 4 && st.cx <= h.box.R + 4 && st.cy >= h.box.U - 4 && st.cy <= h.box.D + 4;
     const near = !h.box && Math.abs(st.cx - h.cursor.x) < P * 0.6 && Math.abs(st.cy - h.cursor.y) < P * 0.6;
-    if (!inBox && !near) return;
+    if (!inBox && !near) {
+      this.log(`press not on the last crate read (${Math.round(st.cx - h.cursor.x)},${Math.round(st.cy - h.cursor.y)} px from it${h.box ? ', outside its outline' : ''})`);
+      return;
+    }
     let size = h.size;
     // no size from the hover (quick grab, tooltip in the way): measure the slot under the press now
     if (!size) { const s = await this.readSize(st, ui); if (s) size = sizeKeyOf(s); }
@@ -472,16 +522,23 @@ export class MerchantReader {
     const x = Math.max(0, st.cx - half), y = Math.max(0, st.cy - half);
     const w = Math.min(st.w - x, half * 2), h = Math.min(st.h - y, half * 2);
     const down = ui > 1.1 ? 1 / ui : 1; // measure on a 1080p-sized copy (4K is 4x the work)
-    const res = await fetch(`/api/frame?png&scale=${down}&x=${x / st.w}&y=${y / st.h}&w=${w / st.w}&h=${h / st.h}`, { cache: "no-store" });
+    // full-resolution capture, shrunk here by averaging (see grayDown)
+    const res = await fetch(`/api/frame?png&x=${x / st.w}&y=${y / st.h}&w=${w / st.w}&h=${h / st.h}`, { cache: "no-store" });
     if (!res.ok) return null;
     const bmp = await createImageBitmap(await res.blob());
     const cv = new OffscreenCanvas(bmp.width, bmp.height), cx = cv.getContext('2d');
     cx.drawImage(bmp, 0, 0);
-    const d = cx.getImageData(0, 0, bmp.width, bmp.height).data, g = new Uint8Array(bmp.width * bmp.height);
-    for (let i = 0; i < g.length; i++) g[i] = (d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8;
+    const { g, w: gw, h: gh } = grayDown(cx.getImageData(0, 0, bmp.width, bmp.height).data, bmp.width, bmp.height, 1 / down);
     // remember the grid's cell size from earlier good reads: it settles borderline boxes
     const dbg = this.cellP ? { fixedP: this.cellP } : {};
-    const s = crateSizeAt(g, bmp.width, bmp.height, Math.round((st.cx - x) * down), Math.round((st.cy - y) * down), dbg);
+    const s = crateSizeAt(g, gw, gh, Math.round((st.cx - x) * down), Math.round((st.cy - y) * down), dbg);
+    this.lastSizeWhy = s ? '' : dbg.fail || 'unknown';
+    if (this.cropSaves < 20) {
+      // keep the crop (full resolution) with what was read, so the size reader can be tuned on real frames
+      this.cropSaves++;
+      this.log(`size crop ${this.cropSaves}: ${s ? `${s.w}x${s.h} (cell ${s.P})` : `failed (${dbg.fail})`}, cursor at ${st.cx - x},${st.cy - y} in the crop, game ${st.w}x${st.h}`);
+      fetch(`/api/snapshot?x=${x / st.w}&y=${y / st.h}&w=${w / st.w}&h=${h / st.h}`, { cache: 'no-store' }).catch(() => { });
+    }
     if (s && (s.w > 1 || s.h > 1)) {
       this.cellSamples = (this.cellSamples || []).concat(s.P).slice(-15);
       const sorted = this.cellSamples.slice().sort((a, b) => a - b);

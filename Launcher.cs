@@ -25,8 +25,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyTitle("ABI Field Merchant")]
 [assembly: System.Reflection.AssemblyProduct("ABI Field Merchant")]
 [assembly: System.Reflection.AssemblyDescription("Arena Breakout: Infinite Field Merchant crate sound decoder")]
-[assembly: System.Reflection.AssemblyVersion("2.1.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("2.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]   // the app version: shown in Settings > About, matches the GitHub release
+[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
 
 namespace ABIFieldMerchant
 {
@@ -912,7 +912,7 @@ namespace ABIFieldMerchant
 
                     if (path == "/api/ping")
                     {
-                        WriteText(ns, 200, "OK", "application/json", Encoding.UTF8.GetBytes("{\"app\":\"abi-companion\",\"native\":true,\"build\":\"" + BuildId + "\"}"));
+                        WriteText(ns, 200, "OK", "application/json", Encoding.UTF8.GetBytes("{\"app\":\"abi-companion\",\"native\":true,\"build\":\"" + BuildId + "\",\"version\":\"" + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3) + "\"}"));
                         return;
                     }
                     if (path == "/api/quit")
