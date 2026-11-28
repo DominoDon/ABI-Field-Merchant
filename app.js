@@ -6,6 +6,7 @@ import { MerchantReader } from './screen.js';
 import { fmt, fmtK, pct, esc, signed, signedPct } from './format.js';
 import { Session, discordText } from './session.js';
 import { decisionHtml, itemRowsHtml, seenRowHtml, SEEN_HEAD, tone } from './views.js';
+import { purchasesHtml, learnedHtml, playPcm16 } from './records.js';
 import { fetchSharedPurchases, refineWithPurchases } from './purchaseOdds.js';
 
 const $ = (id) => document.getElementById(id);
@@ -892,6 +893,23 @@ $('selfcheck-btn').addEventListener('click', async () => {
   box.innerHTML = items.map(i => `<div class="check ${i.status}"><span class="ic">${icon[i.status] || 'i'}</span><span>${esc(i.text)}</span></div>`).join('');
 });
 
+// Settings > View: purchase history and learned sounds (records.js lays them out)
+function openRecords(title, html) { $('records-title').textContent = title; $('records-body').innerHTML = html; $('records').showModal(); }
+$('records-close').addEventListener('click', () => $('records').close());
+$('view-mine').addEventListener('click', () => openRecords('Your purchase history', purchasesHtml(purchases.mine.slice().reverse().map(r => {
+  const it = itemsById.get(r.itemId);
+  return { t: r.t, map: r.map ? r.map.replace('|', ' · ') : '', crate: GAME_DATA.types[r.typeId] || 'Crate', paid: r.paid || r.price, price: r.price,
+    size: r.size ? sizeLabel(r.size) : '', sound: r.soundId ? soundLabel(r.soundId) : 'no sound', item: it ? { name: it.name, rarity: it.rarity } : null, value: it ? valueOf(it) : 0 };
+}))));
+let learnedClips = new Map(); // t -> recording, for the play buttons
+$('view-learned').addEventListener('click', async () => {
+  const all = (await idb.all().catch(() => [])).sort((a, b) => b.t - a.t);
+  learnedClips = new Map(all.map(r => [String(r.t), r.pcm16]));
+  const bySound = new Map();
+  for (const r of all) { if (!bySound.has(r.soundId)) bySound.set(r.soundId, []); bySound.get(r.soundId).push({ t: r.t, seconds: r.pcm16.length / 48000 }); }
+  openRecords('Learned sounds', learnedHtml([...bySound].map(([id, clips]) => ({ name: soundLabel(id), clips })).sort((a, b) => b.clips.length - a.clips.length)));
+});
+$('records-body').addEventListener('click', e => { const b = e.target.closest('[data-play]'); if (b && learnedClips.has(b.dataset.play)) playPcm16(learnedClips.get(b.dataset.play)); });
 $('forget-learned').addEventListener('click', async () => {
   if (!learnedStats.clips || !confirm('Forget all sounds learned from your purchases? This cannot be undone.')) return;
   await idb.clear().catch(() => { });
