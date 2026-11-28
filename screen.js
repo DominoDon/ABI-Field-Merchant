@@ -385,6 +385,13 @@ export class MerchantReader {
     this.log = () => { };       // set by the app: writes a line to app.log (for checking live play)
     this.cropSaves = 0;         // merchant crops saved with each size reading (snapshots folder, up to 40), for tuning on real frames
     this.tickStats = { n: 0, sum: 0, max: 0, since: 0 };
+    this.trail = [];            // recent cursor positions { t (Date.now), x, y }, for telling which crate a sound came from
+  }
+
+  // Was the cursor within `r` px of point p at some moment between t0 and t1 (Date.now times)? Unknown -> true.
+  cursorNear(p, r, t0, t1) {
+    const pts = this.trail.filter(q => q.t >= t0 && q.t <= t1);
+    return !pts.length || pts.some(q => Math.hypot(q.x - p.x, q.y - p.y) <= r);
   }
   on(e, cb) { this.listeners[e].push(cb); }
   emit(e, d) { this.listeners[e].forEach(cb => cb(d)); }
@@ -446,6 +453,9 @@ export class MerchantReader {
     const moved = !this.lastCursor || Math.abs(st.cx - this.lastCursor.x) > 3 || Math.abs(st.cy - this.lastCursor.y) > 3;
     if (moved) { this.stillSince = now; this.sizeTaken = false; }
     this.lastCursor = { x: st.cx, y: st.cy };
+    const tNow = Date.now();
+    this.trail.push({ t: tNow, x: st.cx, y: st.cy });
+    while (this.trail.length && this.trail[0].t < tNow - 5000) this.trail.shift();
 
     // size: grab the outline right after the cursor settles (before the tooltip covers it). Only at the merchant:
     // the lobby and other menus have no crate grid.

@@ -46,6 +46,9 @@ const listener = new WorkerListener();
 const itemsById = new Map(GAME_DATA.items.map(i => [i.id, i]));
 // one line to the exe's app.log (detections, grabs), so real game behaviour can be checked and tuned
 function logLine(m) { try { fetch('/api/log?m=' + encodeURIComponent(m)).catch(() => { }); } catch (e) { } }
+// page errors go to app.log too: a failing redraw otherwise just leaves the window showing old values
+addEventListener('error', e => logLine(`page error: ${e.message} at ${(e.filename || '').split('/').pop()}:${e.lineno}`));
+addEventListener('unhandledrejection', e => logLine(`page error (async): ${e.reason && (e.reason.stack || e.reason.message) || e.reason}`.slice(0, 380)));
 const soundsById = new Map(GAME_DATA.sounds.map(s => [s.id, s]));
 // sounds are shown by name only (the game's sound numbers mean nothing to a player)
 const soundLabel = (id) => (soundsById.get(id) || {}).name || 'Unknown sound';
@@ -575,6 +578,13 @@ async function initAudio() {
     if (grabbed && grabbed !== current) {
       current = grabbed; state.crate = grabbed.crateKey; state.size = grabbed.size || ''; state.paid = grabbed.paid || 0; state.crateFromScreen = true;
     }
+    // ...but only if the cursor was on it around the pickup: the app can't see clicks, so a crate grabbed before its
+    // tooltip was read would otherwise inherit the previous crate (and show its odds)
+    const reach = (reader.lastHover && reader.lastHover.P || 85) * 1.6;
+    if (current && !grabbed && !reader.cursorNear(current.cursor, reach, m.time - 2000, m.time)) {
+      logLine(`sound from a crate not read yet (cursor was away from ${current.typeName} ${current.price})`);
+      current = null; state.crate = ''; state.size = ''; state.paid = 0; state.crateFromScreen = false; renderPickers();
+    }
     if (current && Date.now() - current.at < 20000) { current.soundId = m.soundId; current.mix = m.alts || null; current.match = m; current.at = Date.now(); }
     setSound(m.soundId, m);
     // your alert for this crate (the verdict and its Best buys row light up as they render); chime if wanted
@@ -956,7 +966,7 @@ if (new URLSearchParams(location.search).has('demo')) {
 }
 
 // debug handle (used by tools/ test pages)
-window.__abi = { reader, seen, state, listener, render, crateStats, setSound, idb };
+window.__abi = { reader, seen, state, listener, render, crateStats, setSound, idb, applyHover };
 
 // When a newer build of the app takes over the server, reload this window onto it.
 (async () => {
