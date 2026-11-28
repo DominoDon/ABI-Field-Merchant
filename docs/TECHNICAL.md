@@ -17,6 +17,7 @@ Requirements for building: Windows with the .NET Framework 4.x C# compiler (ship
 | `Launcher.cs` → `ABI-Field-Merchant.exe` | Native host (C# .NET 4.x, single file). Serves the app on `127.0.0.1:5173`, game audio capture, game-window capture + Windows OCR, reference-sound cache, F8 snapshots, tray icon, Chrome/Edge `--app` window. |
 | `index.html`, `app.js` | The app screen: top bar (map, crate, live status), crate + sizes with red chance, the heard sound (with close-call alternatives), verdict with red/profit gauges (red-chance confidence), ROI and 80% range, item cards, best buys + raid plan, your alert thresholds, session panel + CSV export, settings drawer (incl. self-check), prompts. |
 | `views.js` | HTML for the decision strip (verdict · expected profit + ROI · red chance + confidence), the possible-contents rows and the Best buys rows. |
+| `records.js` | The Settings > View dialogs: your purchase history and the learned sounds (with playback). |
 | `session.js` | This play session's purchases: totals, best / worst buy, the "Copy for Discord" text. |
 | `purchaseOdds.js` | Refines the odds with real purchase results (yours + the public neverh8me base). |
 | `format.js` | Number / text formatting shared by the modules. |
