@@ -579,7 +579,8 @@ async function initAudio() {
     // your alert for this crate (the verdict and its Best buys row light up as they render); chime if wanted
     const st = state.crate ? crateStats(state.profile, state.crate, heard(), state.size || null) : null;
     const alert = alertFor(st, m.soundId);
-    if (alert) { logLine(`alert ${alert}: red ${pct(st.red)}%, profit ${Math.round(st.profit)}`); if (state.chime) playChime(alert === 'red'); }
+    // chime only at the merchant: item drags in your stash or a raid make sounds too
+    if (alert) { logLine(`alert ${alert}: red ${pct(st.red)}%, profit ${Math.round(st.profit)}${reader.merchantOpen ? '' : ' (merchant closed: no chime)'}`); if (state.chime && reader.merchantOpen) playChime(alert === 'red'); }
     const card = $('sound-card');
     card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
   });
