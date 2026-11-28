@@ -470,10 +470,9 @@ export class MerchantReader {
       const at = { x: st.cx, y: st.cy };
       this.pendingSize = this.readSize(st, ui).catch(() => null).then(s => { this.sizeBusy = false; return s && { ...s, at }; });
     }
-    // tooltip: once the cursor has rested ~200 ms (the game shows it almost at once). Every read copies part of the
-    // game's screen, which can make the game stutter: every 0.6 s at the merchant, only every 3 s elsewhere (just
-    // often enough to notice the merchant if the header check misses it).
-    if (canRead && onPanel && st.focused && !st.lmb && now - this.stillSince > 200 && now - this.lastTooltipAt > (this.merchantOpen ? 600 : 3000)) {
+    // tooltip: once the cursor has rested ~200 ms (the game shows it almost at once). Only at the merchant (found by
+    // the header check below): every read copies part of the game's screen, which can make the game stutter.
+    if (this.merchantOpen && canRead && onPanel && st.focused && !st.lmb && now - this.stillSince > 200 && now - this.lastTooltipAt > 600) {
       this.lastTooltipAt = now;
       const rx = Math.max(0, Math.round(st.cx - 120 * ui)), ry = Math.max(0, Math.round(st.cy - 80 * ui));
       const r = await this.ocr(rx, ry, Math.round(560 * ui), Math.round(300 * ui), ocrScale(ui));
