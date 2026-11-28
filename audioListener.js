@@ -760,3 +760,45 @@ export class GameAudioListener {
 }
 
 export const gameAudioListener = new GameAudioListener();
+
+// ------------------------------------------------------------------ worker wrapper (used by the app window)
+// All audio work runs in a background worker (audioWorker.js) so the window never freezes. The window decodes
+// the reference sounds (workers can't decode audio) and talks to the worker through this.
+export class WorkerListener {
+  constructor() {
+    this.listeners = { match: [], level: [], status: [], refs: [], confirm: [], learned: [] };
+    this.w = new Worker('./audioWorker.js', { type: 'module' });
+    this.w.onmessage = (e) => (this.listeners[e.data.type] || []).forEach(cb => cb(e.data.payload));
+    this.w.onerror = (e) => console.error('audio worker:', e.message);
+  }
+  on(evt, cb) { this.listeners[evt].push(cb); }
+  setSensitivity(v) { this.w.postMessage({ type: 'sens', value: v }); }
+  start(source, deviceId) { this.w.postMessage({ type: 'start', source, deviceId }); }
+  stop() { this.w.postMessage({ type: 'stop' }); }
+  setFitting(ids) {
+    const key = ids ? ids.join(',') : '';
+    if (key !== this.lastFits) { this.lastFits = key; this.w.postMessage({ type: 'fits', ids }); }
+  }
+  // sounds the chosen crate (and size) can make: the recogniser tries these first
+  setAllowed(ids) {
+    const key = ids ? ids.join(',') : '';
+    if (key !== this.lastAllowed) { this.lastAllowed = key; this.w.postMessage({ type: 'allowed', ids }); }
+  }
+  // raw audio of the hit detected at `time` (for learning), or null when it's no longer kept
+  requestSnippet(time) {
+    return new Promise(res => {
+      const h = (e) => { if (e.data.type === 'snippet' && e.data.payload.time === time) { this.w.removeEventListener('message', h); res(e.data.payload.pcm); } };
+      this.w.addEventListener('message', h);
+      this.w.postMessage({ type: 'snippet', time });
+      setTimeout(() => { this.w.removeEventListener('message', h); res(null); }, 3000);
+    });
+  }
+  learn(list) { if (list.length) this.w.postMessage({ type: 'learn', list }); }
+  // decode here (workers can't decode audio), fingerprint in the worker
+  async loadReferences() {
+    const { clips, failed } = await GameAudioListener.decodeReferences(p => this.listeners.refs.forEach(cb => cb(p)));
+    const ready = new Promise(res => this.listeners.refs.push(r => { if (r && r.count !== undefined) res(r); }));
+    this.w.postMessage({ type: 'refs', clips, failed }, clips.map(c => c.pcm.buffer));
+    await ready;
+  }
+}

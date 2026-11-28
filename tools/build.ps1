@@ -6,7 +6,7 @@ Set-Location $root
 if (-not (Test-Path app.ico)) { & (Join-Path $PSScriptRoot 'make-icon.ps1') | Out-Null }
 
 $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-$web = 'index.html', 'mini.html', 'app.js', 'audioListener.js', 'audioWorker.js', 'screen.js', 'merchantData.js', 'data.js'
+$web = 'index.html', 'mini.html', 'icon.svg', 'app.js', 'format.js', 'session.js', 'purchaseOdds.js', 'views.js', 'records.js', 'audioListener.js', 'audioWorker.js', 'screen.js', 'merchantData.js', 'data.js'
 $resArgs = $web | ForEach-Object { "/resource:$_,web/$_" }
 $common = @('/nologo', '/target:winexe', '/optimize+', '/win32icon:app.ico',
             '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll', '/r:Microsoft.CSharp.dll', '/r:System.Core.dll',

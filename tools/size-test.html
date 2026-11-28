@@ -5,7 +5,7 @@
 <script type="module">
 // Frames are 2560x1440 captures (tools/_test/clip_*.png). Points are cursor positions; the reader works on a
 // 1080p-sized copy of a 520 px box around the cursor, as it does live (screen.js readSize).
-import { crateSizeAt, parseTooltip } from '../screen.js';
+import { crateSizeAt, grayDown, parseTooltip } from '../screen.js';
 const P = (px, py) => [1650 + px, 140 + py]; // offsets measured on the merchant panel crop
 const cases = [
   ['clip_2.png', ...P(130, 360), '2x2'], ['clip_2.png', ...P(40, 230), '1x1'], ['clip_2.png', ...P(720, 300), '1x2'],
@@ -20,24 +20,33 @@ const cases = [
     [279, 930, '2x2'], [450, 930, '2x2']].map(([x, y, s]) => ['clip_2.png', ...P(x, y), s])
 ];
 const tips = [['tip_2.png', 'Mystery Cargo', 70000, 56000], ['tip_30.png', 'Flammables', 20000, 16000], ['tip_40.png', 'Household Items', 100000, 80000], ['tip_50.png', 'Uncommon Mystery Cargo', 250000, 200000]];
-const ui = 1440 / 1080, half = Math.round(260 * ui), down = 1 / ui, bmps = {};
+// 4K: the app's own merchant crops (1040 px around the cursor at 3840x2160), named 4k_<n>_<truth>.png. Your own play,
+// so git-ignored. 'none' = the cursor wasn't on a crate (portrait, dialogue, map): the reader must give nothing.
+// 4k_04/05 are crates cut off at the bottom of the scrolled list: not read yet (the app then stays on "Any").
+const cases4k = [['4k_02_1x2.png', 520, 520], ['4k_03_none.png', 520, 486], ['4k_04_2x3.png', 520, 520], ['4k_05_2x3.png', 520, 520],
+  ['4k_06_2x3.png', 520, 520], ['4k_07_2x3.png', 520, 520], ['4k_13_2x3.png', 520, 520],
+  ['4k_14_none.png', 520, 520], ['4k_15_none.png', 520, 520], ['4k_20_none.png', 520, 520]].map(([f, x, y]) => [f, x, y, f.split('_')[2].replace('.png', ''), 2]);
+const bmps = {};
 const lines = []; let ok = 0;
-for (const [f, cx, cy, truth] of cases) {
+for (const [f, cx, cy, truth, uiScale] of [...cases.map(c => [...c, 1440 / 1080]), ...cases4k]) {
+  const ui = uiScale, half = Math.round(260 * ui), down = 1 / ui;
   const bmp = bmps[f] || (bmps[f] = await createImageBitmap(await (await fetch('_test/' + f)).blob()));
   const x = Math.max(0, cx - half), y = Math.max(0, cy - half), w = Math.min(bmp.width - x, half * 2), h = Math.min(bmp.height - y, half * 2);
-  const W = Math.round(w * down), H = Math.round(h * down);
-  const c = new OffscreenCanvas(W, H).getContext('2d'); c.drawImage(bmp, x, y, w, h, 0, 0, W, H);
-  const d = c.getImageData(0, 0, W, H).data, g = new Uint8Array(W * H);
-  for (let i = 0; i < g.length; i++) g[i] = (d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8;
+  // same as live: full-resolution crop, shrunk by averaging (screen.js grayDown)
+  const c = new OffscreenCanvas(w, h).getContext('2d'); c.drawImage(bmp, x, y, w, h, 0, 0, w, h);
+  const { g, w: W, h: H } = grayDown(c.getImageData(0, 0, w, h).data, w, h, ui);
   const dbg = {}, s = crateSizeAt(g, W, H, Math.round((cx - x) * down), Math.round((cy - y) * down), dbg);
   const got = s ? `${Math.min(s.w, s.h)}x${Math.max(s.w, s.h)}` : 'none (' + dbg.fail + ')';
-  if (got === truth) ok++;
-  lines.push(`<span class="${got === truth ? 'ok' : 'bad'}">${f} ${cx},${cy}  want ${truth}  got ${got}</span>`);
+  const good = got === truth || (truth === 'none' && !s);
+  if (good) ok++;
+  lines.push(`<span class="${good ? 'ok' : 'bad'}">${f} ${cx},${cy}  want ${truth}  got ${got}${s ? ` (cell ${s.P})` : ''}</span>`);
 }
-lines.unshift(`<b>Size: ${ok}/${cases.length} right</b>`);
+lines.unshift(`<b>Size: ${ok}/${cases.length + cases4k.length} right</b>`);
 let tok = 0;
 for (const [f, name, price, paid] of tips) {
-  const r = await (await fetch(`/api/ocr?scale=1.5&file=${encodeURIComponent('tools/_test/' + f)}`)).json();
+  let r;
+  try { r = await (await fetch(`/api/ocr?scale=1.5&file=${encodeURIComponent('tools/_test/' + f)}`)).json(); }
+  catch (e) { lines.push(`<span class="bad">${f}  OCR needs the exe with --dev (skipped)</span>`); continue; }
   const t = parseTooltip(r.lines), good = t && t.typeName === name && t.price === price && t.paid === paid;
   if (good) tok++;
   lines.push(`<span class="${good ? 'ok' : 'bad'}">${f}  want ${name} ${price} (paid ${paid})  got ${t ? `${t.typeName} ${t.price} (paid ${t.paid})` : 'nothing'}</span>`);

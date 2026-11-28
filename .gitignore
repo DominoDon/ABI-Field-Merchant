@@ -17,3 +17,7 @@ desktop.ini
 # Frames from personal gameplay clips (other players' names in the purchase line)
 tools/_test/clip_*.png
 tools/_test/tip_*.png
+
+# Claude Code project settings and commands (local only)
+.claude/
+tools/_test/4k_*.png
