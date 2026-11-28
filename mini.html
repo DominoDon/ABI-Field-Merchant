@@ -50,17 +50,14 @@
 </head>
 <body>
   <div class="wrap" id="root"><div class="empty">Waiting for the main window…<br>(keep ABI Field Merchant open or hidden in the tray)</div></div>
-  <script>
+  <script type="module">
     // Mirrors the main window (BroadcastChannel) - it does no listening of its own.
-    const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-    const fmt = (n) => Math.round(n).toLocaleString('en-US');
-    const pct = (v) => (v > 0 && v < 0.01 ? '<1' : String(Math.round(v * 100)));
+    import { esc, fmt, pct, signed } from './format.js';
     const bc = new BroadcastChannel('abi-live');
     let last = 0;
     bc.onmessage = (e) => { if (e.data && e.data.type === 'state') { last = Date.now(); draw(e.data.s); } };
     bc.postMessage({ type: 'hello' });
     setInterval(() => { if (Date.now() - last > 5000) bc.postMessage({ type: 'hello' }); }, 2500);
-    const signed = (n) => `${n >= 0 ? '+' : '−'}${fmt(Math.abs(n))}`;
     const cap = (w) => w[0].toUpperCase() + w.slice(1);
     function draw(s) {
       const v = s.verdict, snd = s.sound;
@@ -69,7 +66,7 @@
         <div class="head"><span class="dot ${s.listening ? 'on' : ''}"></span>ABI Mini<span class="st">${esc(s.status || '')}</span></div>
         ${v ? `<div class="card signal ${v.alert ? 'alert-' + v.alert : ''}">
           <div class="m ${v.tag}"><span class="k">Verdict</span><span class="v">${{ buy: 'BUY', maybe: 'GAMBLE', skip: 'SKIP' }[v.tag]}</span></div>
-          <div class="m"><span class="k">Exp. profit</span><span class="v num ${v.profit >= 0 ? 'gain' : 'loss'}">${signed(v.profit)}</span><span class="s num">ROI ${esc(v.roi || '')}</span></div>
+          <div class="m"><span class="k">Exp. profit</span><span class="v num ${v.profit >= 0 ? 'gain' : 'loss'}">${signed(v.profit, fmt)}</span><span class="s num">ROI ${esc(v.roi || '')}</span></div>
           <div class="m red ${v.red > 0 ? '' : 'zero'}"><span class="k">Red</span><span class="v num">${pct(v.red)}%</span><span class="s">${v.conf ? cap(v.conf) + ' conf.' : '&nbsp;'}</span></div>
         </div>` : ''}
         <div class="card">

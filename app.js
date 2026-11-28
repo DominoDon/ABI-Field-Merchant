@@ -575,15 +575,13 @@ async function initAudio() {
     // the sound belongs to the crate the cursor was just on (dragging starts on a hovered crate)
     // a crate grabbed in the last 4 s owns this sound; otherwise the crate the cursor was just on
     const grabbed = seen.find(s => s.dragAt && Date.now() - s.dragAt < 4000);
-    if (grabbed && grabbed !== current) {
-      current = grabbed; state.crate = grabbed.crateKey; state.size = grabbed.size || ''; state.paid = grabbed.paid || 0; state.crateFromScreen = true;
-    }
+    if (grabbed && grabbed !== current) focusCrate(grabbed);
     // ...but only if the cursor was on it around the pickup: the app can't see clicks, so a crate grabbed before its
     // tooltip was read would otherwise inherit the previous crate (and show its odds)
     const reach = (reader.lastHover && reader.lastHover.P || 85) * 1.6;
     if (current && !grabbed && !reader.cursorNear(current.cursor, reach, m.time - 2000, m.time)) {
       logLine(`sound from a crate not read yet (cursor was away from ${current.typeName} ${current.price})`);
-      current = null; state.crate = ''; state.size = ''; state.paid = 0; state.crateFromScreen = false; renderPickers();
+      focusCrate(null); renderPickers();
     }
     if (current && Date.now() - current.at < 20000) { current.soundId = m.soundId; current.mix = m.alts || null; current.match = m; current.at = Date.now(); }
     setSound(m.soundId, m);
@@ -620,6 +618,19 @@ function setScreenStatus(text, cls) {
   $('screen-dot').className = 'dot ' + (cls || '');
 }
 
+// The crate in focus (a seen entry, or null): its crate, size, sale price, where it came from and the sound heard
+// for it are set together, so no path can leave part of the previous crate behind.
+function focusCrate(entry) {
+  current = entry;
+  state.crate = entry ? entry.crateKey : '';
+  state.size = entry ? entry.size || '' : '';
+  state.paid = entry ? entry.paid || 0 : 0;
+  state.crateFromScreen = !!entry;
+  state.soundId = entry ? entry.soundId || null : null;
+  state.detection = entry ? entry.match || null : null;
+  state.soundMix = entry ? entry.mix || null : null;
+}
+
 function applyHover(h) {
   const crateKey = `${h.typeId}@${h.price}`;
   // a measured size that nothing in this crate comes in is a misread: treat it as unknown
@@ -627,21 +638,17 @@ function applyHover(h) {
   if (fit && fit.empty) { logLine(`size ${h.size} impossible for ${h.typeName} ${h.price}: ignored`); h = { ...h, size: '' }; }
   // same crate as before (still hovering / came back): keep its sound
   const prev = seen.find(s => s.crateKey === crateKey && s.size === h.size && Math.abs(s.cursor.x - h.cursor.x) < 60 && Math.abs(s.cursor.y - h.cursor.y) < 60);
-  current = prev || { crateKey, typeId: h.typeId, typeName: h.typeName, price: h.price, size: h.size, soundId: null, cursor: h.cursor };
-  current.at = Date.now();
-  if (h.paid) current.paid = h.paid;
-  state.paid = current.paid || 0;
-  if (!prev) { seen.unshift(current); if (seen.length > 40) seen.pop(); }
+  const entry = prev || { crateKey, typeId: h.typeId, typeName: h.typeName, price: h.price, size: h.size || '', soundId: null, cursor: h.cursor };
+  entry.at = Date.now();
+  if (h.paid) entry.paid = h.paid;
+  if (!prev) { seen.unshift(entry); if (seen.length > 40) seen.pop(); }
   if (!cratesForProfile(state.profile).some(c => c.key === crateKey)) {
     const others = mapChoices().filter(c => c.profile !== state.profile && cratesForProfile(c.profile).some(x => x.key === crateKey));
     const names = others.slice(0, 3).map(c => `${c.name} ${c.mode}`).join(', ');
     $('screen-note').textContent = `${h.typeName} at ${fmt(h.price)} isn't sold on ${mapLabel(state.mapKey) || 'this map'}${names ? ` — maybe ${names}?` : ''}. Check the map at the top.`;
   } else $('screen-note').textContent = '';
-  state.crate = crateKey;
-  state.crateFromScreen = true;
-  // no size read for this crate: clear it rather than keep the previous crate's size (that narrowed the odds wrongly)
-  state.size = h.size || '';
-  state.soundId = current.soundId; state.detection = current.match || null; state.soundMix = current.mix || null;
+  // (no size read for this crate: it stays unknown rather than keeping the previous crate's size)
+  focusCrate(entry);
   renderPickers(); render();
 }
 
@@ -788,7 +795,7 @@ $('play-drop').addEventListener('click', () => play('drop'));
 $('seen-list').addEventListener('click', e => {
   const row = e.target.closest('.seen'); if (!row) return;
   const s = seen[Number(row.dataset.i)]; if (!s) return;
-  current = s; state.crate = s.crateKey; state.size = s.size; state.soundId = s.soundId; state.crateFromScreen = true; state.paid = s.paid || 0;
+  focusCrate(s);
   renderPickers(); render();
 });
 $('seen-clear').addEventListener('click', () => { seen.length = 0; current = null; state.boughtThisRaid = 0; render(); });
