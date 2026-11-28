@@ -370,6 +370,9 @@ export function crateSizeAtOld(gray, w, h, cx, cy, dbg = {}) {
 const sizeKeyOf = (s) => `${Math.min(s.w, s.h)}x${Math.max(s.w, s.h)}`;
 
 // OCR enlargement: small text at 1080p needs 2x; at 4K the text is already big enough
+// Merchant crops saved per run (full resolution, snapshots folder) with what the size reader made of them, for
+// tuning on real frames. Each costs a full-size capture + PNG + disk write, which slows reading: 0 = off.
+const CROP_SAVES = 0;
 const ocrScale = (ui) => (ui < 1.2 ? 2 : ui < 1.7 ? 1.5 : 1);
 
 // ---------------------------------------------------------------- live reader
@@ -383,7 +386,7 @@ export class MerchantReader {
     this.lastHoverKey = ''; this.seenFeed = new Set(); this.lastFeedAt = 0;
     this.merchantOpen = false; this.merchantSeenAt = 0;
     this.log = () => { };       // set by the app: writes a line to app.log (for checking live play)
-    this.cropSaves = 0;         // merchant crops saved with each size reading (snapshots folder, up to 40), for tuning on real frames
+    this.cropSaves = 0;         // merchant crops saved so far (see CROP_SAVES)
     this.tickStats = { n: 0, sum: 0, max: 0, since: 0 };
     this.trail = [];            // recent cursor positions { t (Date.now), x, y }, for telling which crate a sound came from
   }
@@ -459,10 +462,13 @@ export class MerchantReader {
 
     // size: grab the outline right after the cursor settles (before the tooltip covers it). Only at the merchant:
     // the lobby and other menus have no crate grid.
-    if (this.merchantOpen && canRead && onPanel && st.focused && !st.lmb && !moved && !this.sizeTaken && now - this.stillSince > 60) {
+    // one size read at a time: a sweep across many crates must not queue up full-size captures (that made reading lag)
+    if (this.merchantOpen && canRead && onPanel && st.focused && !st.lmb && !moved && !this.sizeTaken && !this.sizeBusy && now - this.stillSince > 60) {
       this.sizeTaken = true;
       // measured in the background: the tooltip is read at the same time instead of after it
-      this.pendingSize = this.readSize(st, ui).catch(() => null);
+      this.sizeBusy = true;
+      const at = { x: st.cx, y: st.cy };
+      this.pendingSize = this.readSize(st, ui).catch(() => null).then(s => { this.sizeBusy = false; return s && { ...s, at }; });
     }
     // tooltip: once the cursor has rested ~200 ms (the game shows it almost at once)
     if (canRead && onPanel && st.focused && !st.lmb && now - this.stillSince > 200 && now - this.lastTooltipAt > 600) {
@@ -472,14 +478,16 @@ export class MerchantReader {
       const tip = r && parseTooltip(r.lines);
       if (tip) {
         this.setOpen(true);
-        const ps = await this.pendingSize;
+        // only a reading taken where the cursor is now (an older one belongs to another crate)
+        const got = await this.pendingSize;
+        const ps = got && Math.abs(got.at.x - st.cx) <= 3 && Math.abs(got.at.y - st.cy) <= 3 ? got : null;
         const size = ps ? sizeKeyOf(ps) : '';
         this.lastHover = { typeId: tip.typeId, typeName: tip.typeName, price: tip.price, paid: tip.paid, size,
           box: ps && ps.client, cursor: { x: st.cx, y: st.cy }, t: now, P: this.cellP ? this.cellP * ui : 85 * ui / 1.333 };
         const key = `${tip.typeId}@${tip.price}#${size}@${Math.round(st.cx / 20)},${Math.round(st.cy / 20)}`;
         if (key !== this.lastHoverKey) {
           this.lastHoverKey = key;
-          this.log(`read ${tip.typeName} ${tip.price}${tip.paid ? ' (sale ' + tip.paid + ')' : ''} size ${size || 'NONE (' + (this.lastSizeWhy || 'not measured') + ')'} at ${st.w}x${st.h}, ${Math.round(performance.now() - this.stillSince)} ms after the cursor stopped`);
+          this.log(`read ${tip.typeName} ${tip.price}${tip.paid ? ' (sale ' + tip.paid + ')' : ''} size ${size || 'NONE (' + (this.lastSizeWhy || 'not measured') + ')'} at ${st.w}x${st.h}, ${Math.round(performance.now() - this.stillSince)} ms after the cursor stopped (size read took ${this.lastSizeMs ?? '?'} ms)`);
           this.emit('hover', { typeId: tip.typeId, typeName: tip.typeName, price: tip.price, paid: tip.paid, size, at: Date.now(), cursor: { x: st.cx, y: st.cy } });
         }
       }
@@ -531,6 +539,7 @@ export class MerchantReader {
   }
 
   async readSize(st, ui) {
+    const t0 = performance.now();
     const half = Math.round(260 * ui);
     const x = Math.max(0, st.cx - half), y = Math.max(0, st.cy - half);
     const w = Math.min(st.w - x, half * 2), h = Math.min(st.h - y, half * 2);
@@ -546,7 +555,8 @@ export class MerchantReader {
     const dbg = this.cellP ? { fixedP: this.cellP } : {};
     const s = crateSizeAt(g, gw, gh, Math.round((st.cx - x) * down), Math.round((st.cy - y) * down), dbg);
     this.lastSizeWhy = s ? '' : dbg.fail || 'unknown';
-    if (this.cropSaves < 40) {
+    this.lastSizeMs = Math.round(performance.now() - t0);
+    if (this.cropSaves < CROP_SAVES) {
       // keep the crop (full resolution) with what was read, so the size reader can be tuned on real frames
       this.cropSaves++;
       this.log(`size crop ${this.cropSaves}: ${s ? `${s.w}x${s.h} (cell ${s.P})` : `failed (${dbg.fail})`}, cursor at ${st.cx - x},${st.cy - y} in the crop, game ${st.w}x${st.h}`);
