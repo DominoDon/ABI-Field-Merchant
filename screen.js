@@ -470,14 +470,16 @@ export class MerchantReader {
       const at = { x: st.cx, y: st.cy };
       this.pendingSize = this.readSize(st, ui).catch(() => null).then(s => { this.sizeBusy = false; return s && { ...s, at }; });
     }
-    // tooltip: once the cursor has rested ~200 ms (the game shows it almost at once)
-    if (canRead && onPanel && st.focused && !st.lmb && now - this.stillSince > 200 && now - this.lastTooltipAt > 600) {
+    // tooltip: once the cursor has rested ~200 ms (the game shows it almost at once). Every read copies part of the
+    // game's screen, which can make the game stutter: every 0.6 s at the merchant, only every 3 s elsewhere (just
+    // often enough to notice the merchant if the header check misses it).
+    if (canRead && onPanel && st.focused && !st.lmb && now - this.stillSince > 200 && now - this.lastTooltipAt > (this.merchantOpen ? 600 : 3000)) {
       this.lastTooltipAt = now;
       const rx = Math.max(0, Math.round(st.cx - 120 * ui)), ry = Math.max(0, Math.round(st.cy - 80 * ui));
       const r = await this.ocr(rx, ry, Math.round(560 * ui), Math.round(300 * ui), ocrScale(ui));
       const tip = r && parseTooltip(r.lines);
       if (tip) {
-        this.setOpen(true);
+        this.setOpen(true, 'tooltip');
         // only a reading taken where the cursor is now (an older one belongs to another crate)
         const got = await this.pendingSize;
         const ps = got && Math.abs(got.at.x - st.cx) <= 3 && Math.abs(got.at.y - st.cy) <= 3 ? got : null;
@@ -492,13 +494,14 @@ export class MerchantReader {
         }
       }
     }
-    // purchase line: the top of the merchant panel, every ~2.5 s while the game is in front
-    if (canRead && st.focused && now - this.lastFeedAt > (this.merchantOpen ? 2500 : 6000)) {
+    // purchase line and "is the merchant open?": the top of the merchant panel, every ~2.5 s at the merchant. Elsewhere
+    // this is the only screen copy the app makes: every 3 s while a menu (cursor) is up, never while you aim in a raid.
+    if (canRead && st.focused && now - this.lastFeedAt > (this.merchantOpen ? 2500 : 3000)) {
       this.lastFeedAt = now;
       const r = await this.ocr(Math.round(st.w * 0.45), 0, Math.round(st.w * 0.55), Math.round(st.h * 0.3), ocrScale(ui));
       if (r) {
         const text = r.lines.map(l => l.text).join(' ').toLowerCase();
-        if (/purchase/.test(text) && /(sell|supplies)/.test(text)) this.setOpen(true);
+        if (/purchase/.test(text) && /(sell|supplies)/.test(text)) this.setOpen(true, 'header');
         else if (now - this.merchantSeenAt > 15000) this.setOpen(false, 'closed');
         for (const f of parseFeed(r.lines)) {
           const k = `${f.price}|${f.itemId}|${f.text.slice(0, 20)}`;
@@ -530,7 +533,7 @@ export class MerchantReader {
 
   setOpen(open, why) {
     if (open) this.merchantSeenAt = performance.now();
-    if (open !== this.merchantOpen) { this.merchantOpen = open; this.emit('status', { open, why }); }
+    if (open !== this.merchantOpen) { this.merchantOpen = open; this.log(`merchant ${open ? 'open' : 'closed'} (${why})`); this.emit('status', { open, why }); }
   }
 
   async ocr(x, y, w, h, scale) {
