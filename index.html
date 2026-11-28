@@ -256,29 +256,29 @@
     @media (max-width: 1240px) { .steps { grid-template-columns: 1fr; } }
 
     /* ------------------------------------------------------------- items */
-    .items { display: flex; flex-direction: column; max-height: 560px; overflow-y: auto; } /* long lists scroll here, so Best buys stays in view */
+    .items { display: flex; flex-direction: column; max-height: 640px; overflow-y: auto; } /* long lists scroll here, so Best buys stays in view */
     .ihead { position: sticky; top: 0; z-index: 1; background: var(--panel); }
-    .ihead, .irow { display: grid; grid-template-columns: minmax(0, 1fr) 120px 110px 74px; align-items: center; gap: 14px; }
+    .ihead, .irow { display: grid; grid-template-columns: minmax(0, 1fr) 140px 128px 84px; align-items: center; gap: 16px; }
     .ihead { padding: 0 2px 6px; font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
     .ihead span:nth-child(n+2), .irow .val, .irow .odds { text-align: right; }
-    .irow { padding: 8px 2px; border-top: 1px solid var(--line); }
+    .irow { padding: 10px 2px; border-top: 1px solid var(--line); }
     .irow:hover { background: rgba(255,255,255,.02); }
-    .irow .it { display: flex; align-items: center; gap: 12px; min-width: 0; }
-    .irow .art { width: 54px; height: 50px; flex: none; display: grid; place-items: center; border-radius: 8px; border: 1px solid var(--line);
+    .irow .it { display: flex; align-items: center; gap: 16px; min-width: 0; }
+    .irow .art { width: 80px; height: 72px; flex: none; display: grid; place-items: center; border-radius: 8px; border: 1px solid var(--line);
       background: radial-gradient(closest-side, color-mix(in srgb, var(--rc) 20%, transparent), transparent); }
-    .irow img { max-width: 46px; max-height: 44px; object-fit: contain; }
-    .irow .nm { font-weight: 700; font-size: 14.5px; color: var(--text); }
-    .irow .meta { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: 12px; color: var(--dim); }
-    .irow .meta i { width: 4px; height: 10px; border-radius: 1px; background: var(--rc); }
-    .irow .val { font-weight: 700; font-size: 14.5px; }
-    .irow .odds { font-weight: 800; font-size: 16px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-    .irow .odds .bar { width: 34px; height: 3px; border-radius: 2px; background: #2a313b; overflow: hidden; }
+    .irow img { max-width: 70px; max-height: 64px; object-fit: contain; }
+    .irow .nm { font-weight: 700; font-size: 17px; color: var(--text); }
+    .irow .meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 13px; color: var(--dim); }
+    .irow .meta i { width: 4px; height: 12px; border-radius: 1px; background: var(--rc); }
+    .irow .val { font-weight: 700; font-size: 17px; }
+    .irow .odds { font-weight: 800; font-size: 19px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+    .irow .odds .bar { width: 40px; height: 4px; border-radius: 2px; background: #2a313b; overflow: hidden; }
     .irow .odds .bar i { display: block; height: 100%; background: var(--text-2); }
     .irow.r6 .odds .bar i { background: var(--r6); }
     .irow .got { justify-self: end; font-size: 11.5px; padding: 4px 9px; border-radius: 7px; border: 1px solid rgba(61,220,151,.35);
       background: none; color: var(--good); cursor: pointer; opacity: .55; transition: opacity .15s; }
     .irow:hover .got, .irow .got:focus { opacity: 1; }
-    .items.no-odds .ihead, .items.no-odds .irow { grid-template-columns: minmax(0, 1fr) 120px 74px; }
+    .items.no-odds .ihead, .items.no-odds .irow { grid-template-columns: minmax(0, 1fr) 140px 84px; }
     .items-empty { color: var(--dim); text-align: center; padding: 26px 10px; font-size: 13px; }
 
     /* ------------------------------------------------------------- best buys */
@@ -516,7 +516,7 @@
       </div>
       <div class="field about-app">
         <div class="who"><img src="icon.svg" alt="" /><div><b>ABI Field Merchant</b><span id="app-version">Version …</span></div></div>
-        <div class="help">Free and open source (MIT). New versions are posted on GitHub.</div>
+        <div class="help">Free and open source (MIT). New versions are posted on GitHub. Add SlawBunny on ABI!</div>
         <div class="links">
           <a class="btn primary" href="https://github.com/DominoDon/ABI-Field-Merchant/releases/latest" target="_blank" rel="noopener">Check for updates</a>
           <a class="link" href="https://github.com/DominoDon/ABI-Field-Merchant" target="_blank" rel="noopener">Project page</a>

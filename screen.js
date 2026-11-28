@@ -229,6 +229,9 @@ export function crateSizeAt(gray, w, h, cx, cy, dbg = {}) {
       for (let i = i1; i < i1 + cw; i++) { outl.push(he(i, j1 - 1), he(i, j1 + chh - 1)); for (let j = j1; j < j1 + chh - 1; j++) inn.push(he(i, j)); }
       const ko = known(outl), ki = known(inn);
       if (ko.length < Math.max(2, outl.length / 2)) continue; // too little of the outline visible
+      // a box joining cells needs at least one boundary between them seen to be missing: the tooltip often hides
+      // the only edge between a 1x1 crate and its neighbour, which must not turn it into a 1x2
+      if (inn.length && !ki.length) continue;
       const o = ko.reduce((a, b) => a + Math.min(1, b / 0.7), 0) / ko.length;
       const n = ki.length ? ki.reduce((a, b) => a + Math.min(1, b / 0.7), 0) / ki.length : 0;
       // more visible outline that is frame = more evidence (breaks ties toward the box that explains more)
@@ -380,7 +383,7 @@ export class MerchantReader {
     this.lastHoverKey = ''; this.seenFeed = new Set(); this.lastFeedAt = 0;
     this.merchantOpen = false; this.merchantSeenAt = 0;
     this.log = () => { };       // set by the app: writes a line to app.log (for checking live play)
-    this.cropSaves = 0;         // merchant crops saved with each size reading (snapshots folder), for tuning on real frames
+    this.cropSaves = 0;         // merchant crops saved with each size reading (snapshots folder, up to 40), for tuning on real frames
     this.tickStats = { n: 0, sum: 0, max: 0, since: 0 };
   }
   on(e, cb) { this.listeners[e].push(cb); }
@@ -533,7 +536,7 @@ export class MerchantReader {
     const dbg = this.cellP ? { fixedP: this.cellP } : {};
     const s = crateSizeAt(g, gw, gh, Math.round((st.cx - x) * down), Math.round((st.cy - y) * down), dbg);
     this.lastSizeWhy = s ? '' : dbg.fail || 'unknown';
-    if (this.cropSaves < 20) {
+    if (this.cropSaves < 40) {
       // keep the crop (full resolution) with what was read, so the size reader can be tuned on real frames
       this.cropSaves++;
       this.log(`size crop ${this.cropSaves}: ${s ? `${s.w}x${s.h} (cell ${s.P})` : `failed (${dbg.fail})`}, cursor at ${st.cx - x},${st.cy - y} in the crop, game ${st.w}x${st.h}`);
